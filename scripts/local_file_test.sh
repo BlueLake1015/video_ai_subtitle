@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# End-to-end smoke test against the local fixture.
+# End-to-end test against the local fixture.
 #
 # Default:  one transcribe case (medium) + one translate case (medium + fast).
 # --full:   run the whole preset matrix.
@@ -37,7 +37,7 @@ done
 PROJECT_DIR="${PROJECT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 VENV_DIR="${VENV_DIR:-$PROJECT_DIR/.venv}"
 FIXTURE="${FIXTURE:-$PROJECT_DIR/tests/fixtures/test_en_30s.mp4}"
-OUT_DIR="${OUT_DIR:-/tmp/vas-smoke}"
+OUT_DIR="${OUT_DIR:-/tmp/vas-test}"
 SRC_LANG="${SRC_LANG:-en}"
 TGT_LANG="${TGT_LANG:-ko}"
 KEEP_OUTPUTS="${KEEP_OUTPUTS:-1}"  # 0 = wipe OUT_DIR before run

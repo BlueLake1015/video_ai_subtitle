@@ -149,7 +149,7 @@ What it covers:
 | default | `medium` | `medium` → `fast` |
 | `--full` | `tiny`, `base`, `small`, `medium`, `large-v3-turbo`, `distil-large-v3`, `quality` | `tiny`+`edge`, `medium`+`fast`, `large-v3-turbo`+`balanced` |
 
-- Outputs land in `/tmp/vas-smoke/` (override with `OUT_DIR=…`)
+- Outputs land in `/tmp/vas-test/` (override with `OUT_DIR=…`)
 - Each case asserts the output exists and contains ≥ 1 cue
 - Translation cases are auto-skipped when no `HF_TOKEN` / `huggingface-cli login` is found
 - Final exit code is non-zero if any case failed
@@ -214,7 +214,34 @@ vas subtitle stream.ts -o live.srt -t large-v3-turbo --src-lang en
 
 The pipeline auto-detects URL schemes and applies low-latency / TS-buffer ffmpeg flags. Network drops trigger exponential-backoff reconnect.
 
-### 3.3 Translate an existing subtitle file
+### 3.3 Keep both source and translated subtitles
+
+When `--translate-preset` is set, the project translates each cue and writes only the target file. Pass `--keep-source` to additionally write the pre-translation cues to a sibling path:
+
+```bash
+# Writes BOTH out.ko.srt (Korean) AND out.en.srt (English source)
+vas subtitle in.mp4 -o out.ko.srt \
+    -t large-v3-turbo -T balanced \
+    --src-lang en --tgt-lang ko --keep-source
+```
+
+Path-derivation rules for the source file:
+- Output ends in `.{tgt}.{ext}` → swap tgt for src: `out.ko.srt` → `out.en.srt`
+- Otherwise insert `.{src}` before the extension: `out.srt` → `out.en.srt`
+
+For an explicit path or a different output format for the source, use `--src-output`:
+
+```bash
+# Korean as SRT, English source as TTML
+vas subtitle in.mp4 -o out.ko.srt \
+    -t large-v3-turbo -T balanced \
+    --src-lang en --tgt-lang ko \
+    --src-output out.en.ttml
+```
+
+`--src-output` implies `--keep-source` and works for live streams too — both files are rewritten incrementally as segments finalize.
+
+### 3.4 Translate an existing subtitle file
 
 ```bash
 vas translate-file in.srt -o out.srt -T quality --tgt-lang ja
@@ -222,7 +249,7 @@ vas translate-file in.srt -o out.srt -T quality --tgt-lang ja
 
 Reads SRT or VTT (handles both `,` and `.` decimal separators), translates each cue with the chosen Gemma preset, writes the translated subs.
 
-### 3.4 Make shortcuts
+### 3.5 Make shortcuts
 
 ```bash
 make run IN=input.mp4 OUT=out.srt TPRESET=large-v3-turbo
@@ -230,7 +257,7 @@ make run IN=input.mp4 OUT=out.srt TPRESET=large-v3-turbo MPRESET=balanced TGT=ko
 make run-live IN=udp://239.0.0.1:5000 OUT=live.srt TPRESET=large-v3-turbo MPRESET=fast TGT=ko
 ```
 
-### 3.5 Override knobs (CLI flags)
+### 3.6 Override knobs (CLI flags)
 
 Any preset field can be overridden inline:
 
@@ -243,9 +270,11 @@ Any preset field can be overridden inline:
 | `--mt-backend` | translate backend | `--mt-backend ollama` |
 | `--mt-quant` | translate quantization | `--mt-quant int4` |
 | `--src-lang` / `--tgt-lang` | language pair | `--src-lang en --tgt-lang ko` |
+| `--keep-source` | also write pre-translation cues to a sibling path | `--keep-source` |
+| `--src-output` | explicit path/format for source-language file (implies `--keep-source`) | `--src-output out.en.ttml` |
 | `--log-level` | log verbosity | `--log-level DEBUG` |
 
-### 3.6 Listing presets
+### 3.7 Listing presets
 
 ```bash
 vas list-presets

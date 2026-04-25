@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import subprocess
 from pathlib import Path
 
@@ -100,10 +101,43 @@ def _wrap_lines(text: str, max_chars: int, max_lines: int) -> list[str]:
     return [ln for ln in lines if ln]
 
 
+# ---------------- helpers ----------------
+
+def derive_source_path(output: str, src_lang: str | None, tgt_lang: str | None) -> str:
+    """Derive a sibling path for the source-language subtitle file.
+
+    Rules:
+      * If the user gave `out.{tgt}.ext`, replace `.{tgt}.` with `.{src}.`
+        -> `out.ko.srt` en/ko -> `out.en.srt`
+      * Otherwise, insert `.{src}` before the extension
+        -> `out.srt` en -> `out.en.srt`
+      * If src_lang is unknown, fall back to a generic `.src` tag.
+    """
+    p = Path(output)
+    stem = p.stem
+    src_tag = src_lang or "src"
+    if tgt_lang and stem.endswith(f".{tgt_lang}"):
+        new_stem = stem[: -len(f".{tgt_lang}")] + f".{src_tag}"
+    else:
+        new_stem = f"{stem}.{src_tag}"
+    return str(p.with_name(new_stem + p.suffix))
+
+
 # ---------------- batch pipeline (local file) ----------------
 
-def run_batch(cfg: AppConfig, input_: str, output: str) -> None:
-    """Decode entire file, VAD-segment, transcribe, translate, write."""
+def run_batch(
+    cfg: AppConfig,
+    input_: str,
+    output: str,
+    *,
+    keep_source: bool = False,
+    src_output: str | None = None,
+) -> None:
+    """Decode entire file, VAD-segment, transcribe, translate, write.
+
+    If `cfg.translate` is set and either `keep_source=True` or `src_output` is
+    given, also write the pre-translation cues to a source-language file.
+    """
     audio = _decode_full_audio(input_)
     log.info("decoded %.2fs of audio", len(audio) / SAMPLE_RATE)
 
@@ -120,6 +154,19 @@ def run_batch(cfg: AppConfig, input_: str, output: str) -> None:
     cues = CueAssembler(cfg.cues).assemble(words)
     log.info("assembled %d cues", len(cues))
 
+    # Snapshot the source cues before translation if asked.
+    will_translate = cfg.translate is not None
+    src_path: str | None = None
+    if will_translate and (keep_source or src_output):
+        src_path = src_output or derive_source_path(
+            output,
+            cfg.translate.src_lang or cfg.transcribe.language,
+            cfg.translate.tgt_lang,
+        )
+        src_cues = copy.deepcopy(cues)
+        writer_for(src_path).write(src_cues, src_path)
+        log.info("wrote source captions to %s", src_path)
+
     cues = _translate_cues(cfg, cues)
 
     writer_for(output).write(cues, output)
@@ -128,7 +175,14 @@ def run_batch(cfg: AppConfig, input_: str, output: str) -> None:
 
 # ---------------- live MPEG2-TS pipeline ----------------
 
-async def run_live(cfg: AppConfig, input_: str, output: str) -> None:
+async def run_live(
+    cfg: AppConfig,
+    input_: str,
+    output: str,
+    *,
+    keep_source: bool = False,
+    src_output: str | None = None,
+) -> None:
     """Live ingest from MPEG2-TS URL: stream segments, append cues to file as they finalize."""
     source = (
         SupervisedStreamSource(input_)
@@ -142,10 +196,24 @@ async def run_live(cfg: AppConfig, input_: str, output: str) -> None:
     segmenter = WhisperSegmenter(cfg.segment, cfg.vad)
     writer = writer_for(output)
 
+    # Source-side output (pre-translation). Only meaningful if we'll translate.
+    src_path_str: str | None = None
+    src_writer = None
+    src_cues_so_far: list[Cue] = []
+    if translator is not None and (keep_source or src_output):
+        src_path_str = src_output or derive_source_path(
+            output,
+            cfg.translate.src_lang or cfg.transcribe.language,
+            cfg.translate.tgt_lang,
+        )
+        src_writer = writer_for(src_path_str)
+        log.info("source captions will be written to %s", src_path_str)
+
     # Live = append-as-we-go. We rebuild the file each flush so the writer's
     # full-render output stays consistent (SRT/TTML are not naturally append-only).
     cues_so_far: list[Cue] = []
     out_path = Path(output)
+    src_path = Path(src_path_str) if src_path_str else None
 
     loop = asyncio.get_event_loop()
 
@@ -160,6 +228,15 @@ async def run_live(cfg: AppConfig, input_: str, output: str) -> None:
                 None, transcriber.transcribe, seg.audio, opts,
             )
             new_cues = assembler.assemble(words)
+
+            # Snapshot source cues before mutating with translation.
+            if src_writer is not None and new_cues:
+                src_snapshot = copy.deepcopy(new_cues)
+                for c in src_snapshot:
+                    c.index = len(src_cues_so_far) + 1
+                    src_cues_so_far.append(c)
+                assert src_path is not None
+                src_path.write_text(src_writer.render(src_cues_so_far), encoding="utf-8")
 
             if translator is not None and new_cues:
                 topts = TranslateOptions(

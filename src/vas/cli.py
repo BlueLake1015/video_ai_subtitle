@@ -75,6 +75,14 @@ def subtitle_cmd(
         help="transformers | ollama | gemini"),
     mt_quant: Optional[str] = typer.Option(None, "--mt-quant",
         help="none | int8 | int4"),
+    keep_source: bool = typer.Option(
+        False, "--keep-source",
+        help="When translating, also write the source-language subtitle "
+             "(path auto-derived from --output, e.g. out.srt -> out.{src}.srt)."),
+    src_output: Optional[str] = typer.Option(
+        None, "--src-output",
+        help="Explicit path for the source-language subtitle. Implies --keep-source. "
+             "May use a different format than --output (e.g. .ttml vs .srt)."),
     log_level: str = typer.Option("INFO", "--log-level"),
 ):
     """Generate subtitles from a local file or MPEG2-TS stream.
@@ -83,7 +91,12 @@ def subtitle_cmd(
 
       vas subtitle in.mp4 -o out.srt -t large-v3-turbo
       vas subtitle in.mp4 -o out.srt -t large-v3 -T balanced --src-lang en --tgt-lang ko
-      vas subtitle udp://239.0.0.1:5000 -o live.srt -t large-v3-turbo -T fast --tgt-lang ko
+      # ^ writes only out.srt (Korean)
+      vas subtitle in.mp4 -o out.ko.srt -t large-v3 -T balanced --src-lang en --tgt-lang ko --keep-source
+      # ^ writes out.ko.srt (Korean) and out.en.srt (English source)
+      vas subtitle in.mp4 -o out.ko.srt -t large-v3 -T balanced --src-lang en --tgt-lang ko --src-output src.ttml
+      # ^ writes out.ko.srt (Korean SRT) and src.ttml (English TTML)
+      vas subtitle udp://239.0.0.1:5000 -o live.srt -t large-v3-turbo -T fast --tgt-lang ko --keep-source
     """
     setup_logging(log_level)
 
@@ -102,13 +115,16 @@ def subtitle_cmd(
         transcribe_overrides, translate_overrides,
     )
 
+    if (keep_source or src_output) and cfg.translate is None:
+        log.warning("--keep-source / --src-output have no effect without --translate-preset")
+
     from .pipeline import run_batch, run_live
     if _is_live_url(input_):
         log.info("live ingest: %s", input_)
-        asyncio.run(run_live(cfg, input_, output))
+        asyncio.run(run_live(cfg, input_, output, keep_source=keep_source, src_output=src_output))
     else:
         log.info("batch: %s", input_)
-        run_batch(cfg, input_, output)
+        run_batch(cfg, input_, output, keep_source=keep_source, src_output=src_output)
 
 
 @app.command("translate-file")
