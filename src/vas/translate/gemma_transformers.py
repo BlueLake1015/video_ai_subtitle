@@ -112,8 +112,35 @@ class GemmaTransformersTranslator:
         return outs
 
     def _format(self, text: str, src: str | None, tgt: str) -> str:
-        """Use the model's own chat template when present; else generic prompt."""
-        # TranslateGemma and Gemma-instruct models ship a chat template.
+        """Use the model's own chat template when present; else generic prompt.
+
+        TranslateGemma's chat template requires structured content:
+            content = [{
+                "type": "text",
+                "source_lang_code": "en",
+                "target_lang_code": "ko",
+                "text": "...",
+            }]
+        Generic Gemma-instruct accepts a plain string message.
+        """
+        is_translategemma = "translategemma" in (self.cfg.model or "").lower()
+
+        if is_translategemma:
+            if not src:
+                src = "en"  # template requires a source code; default to en
+            messages = [{
+                "role": "user",
+                "content": [{
+                    "type": "text",
+                    "source_lang_code": src,
+                    "target_lang_code": tgt,
+                    "text": text,
+                }],
+            }]
+            return self._tokenizer.apply_chat_template(
+                messages, tokenize=False, add_generation_prompt=True,
+            )
+
         if hasattr(self._tokenizer, "apply_chat_template") and self._tokenizer.chat_template:
             messages = [{
                 "role": "user",

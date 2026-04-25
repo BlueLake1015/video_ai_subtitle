@@ -6,9 +6,9 @@ build-backend = "setuptools.build_meta"
 name = "video-ai-subtitle"
 version = "0.1.0"
 description = "Subtitle generation: ffmpeg + VAD + Whisper + Gemma -> SRT/TTML/VTT (file or MPEG2-TS)"
-readme = "Readme.md"
+readme = "README.md"
 requires-python = ">=3.11"
-license = { text = "MIT" }
+license = "MIT"
 authors = [{ name = "video_ai_subtitle" }]
 dependencies = [
     "numpy>=1.26",
@@ -19,6 +19,14 @@ dependencies = [
     "onnxruntime>=1.17",
     "silero-vad>=5.1",
     "faster-whisper>=1.0.3",
+    # ctranslate2 4.7+ ships CUDA 13 wheels; pin to the last CUDA 12 build so
+    # users on driver-570 / CUDA 12.8 don't hit "libcudart.so.13: not found".
+    "ctranslate2 >=4.5,<4.7",
+    # CUDA runtime libs needed by CTranslate2 (faster-whisper). The wheel
+    # itself doesn't bundle libcublas / libcudnn; we pull them via these
+    # NVIDIA-published PyPI wheels so a system-wide CUDA toolkit isn't required.
+    'nvidia-cublas-cu12 ; sys_platform == "linux"',
+    'nvidia-cudnn-cu12 >=9,<10 ; sys_platform == "linux"',
 ]
 
 [project.optional-dependencies]

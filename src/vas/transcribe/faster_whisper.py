@@ -3,6 +3,7 @@ from __future__ import annotations
 import numpy as np
 
 from ..config import TranscribeConfig
+from ..cuda_runtime import preload_cuda_libs
 from ..types import Word
 from ..utils.logging import get_logger
 from .base import TranscribeOptions
@@ -17,6 +18,9 @@ class FasterWhisperTranscriber:
 
     def _ensure_model(self):
         if self._model is None:
+            # libcublas / libcudnn live in pip-installed nvidia-* packages;
+            # preload them so CTranslate2 can dlopen() without LD_LIBRARY_PATH.
+            preload_cuda_libs()
             from faster_whisper import WhisperModel
             log.info(
                 "loading faster-whisper model=%s device=%s compute_type=%s",
