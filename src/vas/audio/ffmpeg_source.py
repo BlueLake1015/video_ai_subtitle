@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import ctypes
 import shutil
+import signal
+import sys
 from enum import Enum
 from typing import AsyncIterator
 
@@ -54,11 +57,16 @@ class FfmpegSource:
             extra_input_flags=self.extra_input_flags,
         )
         log.info("ffmpeg %s", " ".join(argv))
+        # preexec_fn = die-with-parent on Linux: if vas crashes or is killed
+        # without running close(), the kernel sends SIGTERM to ffmpeg too
+        # instead of leaving it bound to the UDP/RTP port.
+        preexec = _set_pdeathsig_term if sys.platform == "linux" else None
         self._proc = await asyncio.create_subprocess_exec(
             self.ffmpeg_bin, *argv,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             stdin=asyncio.subprocess.DEVNULL,
+            preexec_fn=preexec,
         )
         self._stderr_task = asyncio.create_task(self._drain_stderr())
 
@@ -125,3 +133,18 @@ async def _read_exact(stream: asyncio.StreamReader, n: int) -> bytes:
 def _decode_s16le(buf: bytes) -> np.ndarray:
     arr = np.frombuffer(buf, dtype=np.int16).astype(np.float32) * INT16_TO_FLOAT
     return arr
+
+
+# Linux PR_SET_PDEATHSIG: tell the kernel to send SIGTERM to this process when
+# its parent dies. Avoids orphan ffmpegs holding sockets after `vas` is killed.
+_PR_SET_PDEATHSIG = 1
+
+
+def _set_pdeathsig_term() -> None:  # pragma: no cover - runs in child process
+    try:
+        libc = ctypes.CDLL("libc.so.6", use_errno=True)
+        libc.prctl(_PR_SET_PDEATHSIG, signal.SIGTERM, 0, 0, 0)
+    except Exception:
+        # If prctl is unavailable, ffmpeg may outlive vas on a hard kill;
+        # users will need to clean up manually. Don't break startup over it.
+        pass

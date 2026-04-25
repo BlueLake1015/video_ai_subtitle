@@ -43,11 +43,21 @@ def build_args(
 
     if is_url:
         # Low-latency demuxer flags for live transport streams.
+        # MPEG2-TS needs a non-zero probesize to discover PAT/PMT stream tables;
+        # 32 bytes (which works for some elementary streams) leaves the demuxer
+        # reporting "Output file #0 does not contain any stream". Use values
+        # large enough to read the first ~100 TS packets but still low-latency.
+        if is_ts_udp:
+            probesize = "500000"        # ~500 KB, well above one PAT/PMT cycle
+            analyzeduration = "200000"  # 200 ms
+        else:
+            probesize = "32"
+            analyzeduration = "0"
         pre += [
             "-fflags", "nobuffer",
             "-flags", "low_delay",
-            "-probesize", "32",
-            "-analyzeduration", "0",
+            "-probesize", probesize,
+            "-analyzeduration", analyzeduration,
         ]
 
     if is_ts_udp:

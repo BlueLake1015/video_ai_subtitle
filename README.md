@@ -214,6 +214,31 @@ vas subtitle stream.ts -o live.srt -t large-v3-turbo --src-lang en
 
 The pipeline auto-detects URL schemes and applies low-latency / TS-buffer ffmpeg flags. Network drops trigger exponential-backoff reconnect.
 
+#### Local loopback test (no real network feed needed)
+
+`scripts/stream_local_file.sh` re-streams any local media file as MPEG2-TS to a loopback address, so you can exercise the live pipeline end-to-end on one machine.
+
+```bash
+# Terminal A — start the receiver FIRST (UDP packets sent before the receiver
+# is listening are silently dropped):
+vas subtitle 'udp://127.0.0.1:5000' -o /tmp/live.ko.srt \
+    -t large-v3-turbo -T fast \
+    --src-lang en --tgt-lang ko --keep-source
+# Writes both /tmp/live.ko.srt (Korean) and /tmp/live.en.srt (English source)
+# incrementally. Drop -T / --tgt-lang / --keep-source if you only want ASR.
+
+# Terminal B — start the streamer
+bash scripts/stream_local_file.sh                                  # streams the bundled fixture
+bash scripts/stream_local_file.sh tests/fixtures/test_en_30s.mp4   # explicit input
+bash scripts/stream_local_file.sh --loop                           # loop forever
+bash scripts/stream_local_file.sh --rtp                            # RTP-encapsulated TS (RFC 2250)
+bash scripts/stream_local_file.sh --port 6000                      # different port
+```
+
+`/tmp/live.srt` will be rewritten roughly every ~28 s (one Whisper segment) with cumulative cues. For the 30 s test fixture you'll want `--loop` so the streamer keeps going long enough for at least one segment to finalize.
+
+If you Ctrl+C the receiver and a leftover ffmpeg is still bound to the port, kill it manually: `pkill -f 'ffmpeg.*udp://'`. (vas now sets `PR_SET_PDEATHSIG=SIGTERM` on its ffmpeg child, so this only happens if ffmpeg was started by something else and orphaned.)
+
 ### 3.3 Keep both source and translated subtitles
 
 When `--translate-preset` is set, the project translates each cue and writes only the target file. Pass `--keep-source` to additionally write the pre-translation cues to a sibling path:

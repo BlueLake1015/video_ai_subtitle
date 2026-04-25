@@ -24,6 +24,16 @@ def test_udp_mpegts_low_latency_flags():
     assert "-overrun_nonfatal" in argv
 
 
+def test_mpegts_uses_relaxed_probesize_for_pat_pmt_discovery():
+    """`-probesize 32 -analyzeduration 0` is too aggressive for MPEG-TS:
+    the demuxer can't find PAT/PMT and reports 'does not contain any stream'.
+    TS sources must use a probesize >= a few KB."""
+    argv = build_args("udp://239.0.0.1:5000", mode="auto")
+    idx = argv.index("-probesize")
+    probesize = int(argv[idx + 1])
+    assert probesize >= 100_000, f"probesize too small for MPEG-TS: {probesize}"
+
+
 def test_rtp_mpegts_treated_same_as_udp():
     argv = build_args("rtp://host:5000", mode="auto")
     assert "-fifo_size" in argv
