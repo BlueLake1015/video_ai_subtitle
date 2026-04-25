@@ -1,0 +1,9 @@
+name: cloud-gemini
+backend: gemini
+model: gemini-2.5-flash       # used as gemini_model; `model` is unused for routing
+gemini_model: gemini-2.5-flash
+gemini_api_key_env: GOOGLE_API_KEY
+max_new_tokens: 512
+temperature: 0.0
+top_p: 1.0
+tgt_lang: en

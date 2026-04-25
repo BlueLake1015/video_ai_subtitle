@@ -1,0 +1,11 @@
+name: gemma4-flagship
+backend: transformers
+model: google/gemma-4-27b-it
+device: cuda
+dtype: bfloat16
+quantization: int4
+max_new_tokens: 512
+temperature: 0.0
+top_p: 1.0
+batch_size: 4
+tgt_lang: en

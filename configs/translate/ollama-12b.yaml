@@ -1,0 +1,8 @@
+name: ollama-12b
+backend: ollama
+model: gemma3:12b           # `ollama pull gemma3:12b` first
+ollama_host: http://127.0.0.1:11434
+max_new_tokens: 512
+temperature: 0.0
+top_p: 1.0
+tgt_lang: en

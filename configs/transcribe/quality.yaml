@@ -1,0 +1,11 @@
+name: quality
+backend: faster_whisper
+model: large-v3
+device: cuda
+compute_type: float16
+beam_size: 5
+best_of: 5
+temperature: 0.0
+condition_on_previous_text: true
+word_timestamps: true
+language: null

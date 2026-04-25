@@ -1,0 +1,11 @@
+name: edge
+backend: transformers
+model: google/gemma-3-1b-it
+device: cuda
+dtype: bfloat16
+quantization: none
+max_new_tokens: 384
+temperature: 0.0
+top_p: 1.0
+batch_size: 16
+tgt_lang: en

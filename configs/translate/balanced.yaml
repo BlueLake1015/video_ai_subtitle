@@ -1,0 +1,11 @@
+name: balanced
+backend: transformers
+model: google/translategemma-12b-it
+device: cuda
+dtype: bfloat16
+quantization: int8       # ~12 GB on RTX 4090, leaves room for Whisper
+max_new_tokens: 512
+temperature: 0.0
+top_p: 1.0
+batch_size: 8
+tgt_lang: en

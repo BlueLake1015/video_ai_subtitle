@@ -1,0 +1,11 @@
+name: distil-large-v3
+backend: faster_whisper
+model: distil-large-v3
+device: cuda
+compute_type: float16
+beam_size: 1
+best_of: 1
+temperature: 0.0
+condition_on_previous_text: false
+word_timestamps: true
+language: en  # distil-* models are English-only

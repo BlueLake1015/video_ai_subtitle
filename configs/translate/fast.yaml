@@ -1,0 +1,11 @@
+name: fast
+backend: transformers
+model: google/translategemma-4b-it
+device: cuda
+dtype: bfloat16
+quantization: none
+max_new_tokens: 512
+temperature: 0.0
+top_p: 1.0
+batch_size: 12
+tgt_lang: en

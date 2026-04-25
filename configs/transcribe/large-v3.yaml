@@ -1,0 +1,11 @@
+name: large-v3
+backend: faster_whisper
+model: large-v3
+device: cuda
+compute_type: float16
+beam_size: 5
+best_of: 1
+temperature: 0.0
+condition_on_previous_text: false
+word_timestamps: true
+language: null
