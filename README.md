@@ -132,7 +132,13 @@ Tests cover pure-Python logic only: ffmpeg argv builders, segmenter aggregation,
 
 ### 2.1 End-to-end test against a local file
 
-`scripts/local_file_test.sh` runs the bundled fixture (`tests/fixtures/test_en_30s.mp4`) through one or more transcribe + translate preset combinations (English → Korean by default), times each run, and prints a pass/fail summary table. Every `vas` invocation is **echoed before it runs**, so you can copy any failing command verbatim and re-run it for debugging.
+The repo ships two pre-built fixtures under [`tests/fixtures/`](tests/fixtures/):
+- `test_en_30s.mp4` — NASA Goddard SVS narrated explainer (public domain, English)
+- `test_zh_30s.mp4` — Lu Xun *True Story of Ah Q* read by a LibriVox volunteer (public domain, Mandarin)
+
+See [`tests/fixtures/README.md`](tests/fixtures/README.md) for source attribution, regeneration recipes, and ready-to-paste `vas subtitle …` commands for each fixture (en, en→ko, zh, zh→en, zh→ko).
+
+`scripts/local_file_test.sh` runs the bundled English fixture through one or more transcribe + translate preset combinations (English → Korean by default), times each run, and prints a pass/fail summary table. Every `vas` invocation is **echoed before it runs**, so you can copy any failing command verbatim and re-run it for debugging.
 
 ```bash
 # Default: 1 transcribe (medium) + 1 translate (medium + fast). Fast.
@@ -183,17 +189,27 @@ vas subtitle input.mp4 -o out.srt -t large-v3-turbo
 # Specific source language (skips language detection, faster + more accurate)
 vas subtitle input.mp4 -o out.srt -t large-v3-turbo --src-lang en
 
-# Transcribe + translate to Korean
+# English -> Korean (transcribe + translate)
 vas subtitle input.mp4 -o out.srt \
     -t large-v3-turbo \
     -T balanced \
     --src-lang en --tgt-lang ko
+
+# Chinese -> English
+vas subtitle input.mp4 -o out.srt \
+    -t large-v3-turbo \
+    -T fast \
+    --src-lang zh --tgt-lang en
 
 # TTML output (IMSC1)
 vas subtitle input.mp4 -o out.ttml -t large-v3-turbo
 
 # Highest quality (slow)
 vas subtitle input.mp4 -o out.srt -t quality -T quality --tgt-lang ja
+
+# Try the bundled fixtures
+vas subtitle tests/fixtures/test_en_30s.mp4 -o /tmp/en.srt -t medium --src-lang en
+vas subtitle tests/fixtures/test_zh_30s.mp4 -o /tmp/zh.srt -t medium --src-lang zh
 ```
 
 ### 3.2 MPEG2-TS live stream → subtitle file (incremental)
