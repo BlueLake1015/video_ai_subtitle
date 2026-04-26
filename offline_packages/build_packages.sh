@@ -277,6 +277,12 @@ if [[ "$SKIP_PIP" != "1" ]]; then
     run "$PY -m venv '$TMPVENV'"
     run "'$TMPVENV/bin/pip' install --upgrade -q pip wheel setuptools"
 
+    # `pip freeze` (step 3) omits pip/wheel/setuptools by design, so they would
+    # never make it into the bundle on their own. install.sh wants to upgrade
+    # them from local wheels before installing the rest, so seed them here.
+    log "downloading pip/wheel/setuptools into $WHEELS_DIR for offline bootstrap"
+    run "'$TMPVENV/bin/pip' download -q -d '$WHEELS_DIR' pip wheel setuptools"
+
     # Step 1: install torch+torchaudio from CUDA-specific index so freeze records
     # the right +cuXXX local version specifier.
     log "installing torch ($TORCH_CUDA) into resolver venv"

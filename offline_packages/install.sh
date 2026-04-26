@@ -157,10 +157,21 @@ if [[ "$SKIP_PIP" != "1" ]]; then
         run "$USER_RUN $PY -m venv '$VENV_DIR'"
     fi
 
-    # bootstrap pip from a wheel that's in the bundle (pip wheel is normally
-    # downloaded by ensurepip; we override with the bundled one to be safe).
-    log "upgrading pip from local wheels"
-    run "$USER_RUN '$VENV_DIR/bin/pip' install --no-index --find-links '$WHEELS_DIR' --upgrade pip wheel setuptools"
+    # bootstrap pip/setuptools/wheel from local wheels if they were bundled.
+    # pip freeze (used by build_packages.sh) excludes these by design, so older
+    # bundles may not contain them. Skip silently when missing -- they're not
+    # required for installing pre-built .whl files (wheel is only needed for
+    # building sdists, which we don't ship).
+    log "upgrading pip/setuptools/wheel from local wheels (where available)"
+    for pkg in pip setuptools wheel; do
+        # check the bundle has at least one matching wheel before invoking pip,
+        # so pip's scary "No matching distribution" ERROR never appears.
+        if compgen -G "$WHEELS_DIR/${pkg}-*.whl" >/dev/null; then
+            run "$USER_RUN '$VENV_DIR/bin/pip' install --no-index --find-links '$WHEELS_DIR' --upgrade $pkg"
+        else
+            warn "[bootstrap] $pkg not in bundle, leaving venv default"
+        fi
+    done
 
     log "installing project dependencies from $WHEELS_DIR ($(wc -l < "$REQ_FILE") packages)"
     run "$USER_RUN '$VENV_DIR/bin/pip' install --no-index --find-links '$WHEELS_DIR' -r '$REQ_FILE'"
