@@ -131,24 +131,34 @@ cd video_ai_subtitle
 bash offline_packages/build_packages.sh
 
 # Step 2: download Whisper + Gemma model weights into offline_packages/hf-cache/
-#         Set HF_TOKEN first if any Gemma repo is gated for your account.
+#         Authenticate first — gated Gemma repos silently fetch only README/config
+#         when the HF token is missing, leaving the snapshot suspiciously small.
+hf auth login                 # or: export HF_TOKEN=hf_xxx
 bash offline_packages/build_models.sh
 
-# Step 3: ship the bundle to the target
-tar czf bundle.tgz offline_packages/
-scp bundle.tgz user@offline-host:~/video_ai_subtitle/
+# Step 3: split into 1 GiB parts under ../offline_packages_parts/ and ship
+sudo apt install pv pigz       # progress bar + parallel gzip (much faster than vanilla gzip)
+mkdir -p ../offline_packages_parts
+tar cf - offline_packages/ \
+  | pv -s $(du -sb offline_packages | cut -f1) \
+  | pigz \
+  | split -b 1G -d -a 3 - ../offline_packages_parts/bundle.tgz.
+
+scp -r ../offline_packages_parts user@offline-host:~/
 ```
 
-The package gathering uses `apt-rdepends` to compute the transitive dependency closure of `nvidia-driver-570`, `python3.11`, `ffmpeg`, etc., then `apt-get download` for each. Pip wheels are resolved against the same `cu128` PyTorch index the online installer uses, then frozen into `pip-wheels/requirements.txt` for deterministic offline replay.
+Both build scripts are **idempotent**: rerun them after a partial transfer or when adding a new variant and they skip what's already on disk (apt packages by `apt-cache` size match; HF repos by completeness check). Pass `FORCE_REDOWNLOAD=1` to `build_models.sh` to bypass the model cache. The package gathering uses `apt-rdepends` for the transitive closure of `nvidia-driver-570`, `python3.11`, `ffmpeg`, etc., and pip wheels are resolved against the same `cu128` PyTorch index the online installer uses, then frozen into `pip-wheels/requirements.txt` for deterministic offline replay.
 
-**Phase 2 — on the offline target**:
+**Phase 2 — on the offline target** (assumes `~/video_ai_subtitle/` is checked out and `~/offline_packages_parts/` is its sibling, as scp'd above):
 
 ```bash
-cd video_ai_subtitle
-tar xzf bundle.tgz
+cd ~/video_ai_subtitle
+cat ../offline_packages_parts/bundle.tgz.* | tar xzf -    # restores ./offline_packages/
 bash offline_packages/install.sh
 sudo reboot                    # only if a kernel module .deb was installed
 ```
+
+The offline target needs `tar` and `gzip` (both ship with Ubuntu by default); `pv` and `pigz` are not required there.
 
 `offline_packages/install.sh` does:
 
@@ -166,10 +176,17 @@ TARGET_DRIVER=580           bash offline_packages/build_packages.sh
 TORCH_CUDA=cu124            bash offline_packages/build_packages.sh
 PIP_EXTRAS=translate,quant,whispercpp,gemini,dev \
                             bash offline_packages/build_packages.sh
+
+# Default WHISPER_MODELS covers all 7 transcribe presets (tiny / base / small /
+# medium / large-v3 / distil-large-v3 / large-v3-turbo). Default GEMMA_MODELS
+# covers all 5 HF-hosted translate presets:
+#   google/gemma-3-1b-it, translategemma-{4b,12b,27b}-it, gemma-4-27b-it
+# Trim either to skip variants you won't use:
 WHISPER_MODELS="medium large-v3-turbo" \
 GEMMA_MODELS="google/translategemma-4b-it" \
                             bash offline_packages/build_models.sh
 GEMMA_MODELS=""             bash offline_packages/build_models.sh   # whisper only
+FORCE_REDOWNLOAD=1          bash offline_packages/build_models.sh   # bypass HF skip-if-cached
 
 # Install phase (offline target):
 SKIP_DEBS=1                 bash offline_packages/install.sh        # debs already done
@@ -180,18 +197,22 @@ HF_CACHE_TARGET=/data/hf    bash offline_packages/install.sh        # custom cac
 
 #### Bundle size
 
-Plan disk before running the build phase:
+Plan disk before running the build phase. **The default model list pulls every preset**, totaling ~160 GB. Trim aggressively if you only need a subset:
 
 | Component | Size |
 |---|---|
-| `debs/` (driver + python + ffmpeg + transitive) | ~700 MB |
-| `pip-wheels/` (torch, transformers, faster-whisper, …) | ~6 GB |
-| `hf-cache/` Whisper variants (tiny..large-v3) | ~6 GB |
-| `hf-cache/` Gemma 1B + TranslateGemma 4B | ~12 GB |
+| `debs/` + `nvidia-debs/` (driver + python + ffmpeg + transitive) | ~600 MB |
+| `pip-wheels/` (torch+cu128, transformers, faster-whisper, …) | ~4 GB |
+| `hf-cache/` Whisper variants (tiny..large-v3 + turbo + distil) | ~10 GB |
+| `hf-cache/` + Gemma 3 1B + TranslateGemma 4B | +12 GB |
 | `hf-cache/` + TranslateGemma 12B | +25 GB |
 | `hf-cache/` + TranslateGemma 27B | +54 GB |
+| `hf-cache/` + Gemma 4 27B (flagship preset) | +54 GB |
+| **Default total (all presets)** | **~160 GB** |
+| Minimum useful (transcribe-only, single Whisper) | ~5 GB |
+| Translate-capable (4B + Whisper turbo) | ~15 GB |
 
-Trim with `WHISPER_MODELS` / `GEMMA_MODELS` env vars on the build script.
+Trim with `WHISPER_MODELS` / `GEMMA_MODELS` env vars on the build script. The two 27B models (`translategemma-27b-it`, `gemma-4-27b-it`) are the biggest cost — drop them unless you're using the `quality` or `gemma4-flagship` preset.
 
 ---
 

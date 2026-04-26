@@ -40,17 +40,33 @@ The NVIDIA driver `.debs` install kernel modules that need a reboot before the G
 ```bash
 cd video_ai_subtitle
 
-# 1. Gather .debs (~600 MB) and pip wheels (~3.9 GB)
+# 1. Gather .debs (~600 MB) and pip wheels (~3.9 GB).
+#    Idempotent — re-runs skip files already on disk with matching apt-cache size.
 bash offline_packages/build_packages.sh
 
-# 2. Download Whisper + Gemma model weights (~6-100 GB depending on variants chosen)
-#    Set HF_TOKEN first if any Gemma repo is gated for your HF account.
+# 2. Download Whisper + Gemma weights (~10-160 GB depending on variants chosen).
+#    Authenticate FIRST. Without auth, gated Gemma repos silently fetch only
+#    README/config (a 44 KB snapshot that looks "complete" but isn't usable).
+hf auth login                  # or: export HF_TOKEN=hf_xxx
 bash offline_packages/build_models.sh
 
-# 3. Pack and transfer
-tar czf bundle.tgz offline_packages/
-scp bundle.tgz user@offline-host:~/video_ai_subtitle/
+# 3. Pack into 1 GiB parts and transfer.
+#    pigz = parallel gzip (5-10× faster than vanilla gzip on multi-core hosts);
+#    output stays gzip-compatible so the offline target needs no special tools.
+sudo apt install pv pigz
+mkdir -p ../offline_packages_parts
+tar cf - offline_packages/ \
+  | pv -s $(du -sb offline_packages | cut -f1) \
+  | pigz \
+  | split -b 1G -d -a 3 - ../offline_packages_parts/bundle.tgz.
+
+scp -r ../offline_packages_parts user@offline-host:~/
 ```
+
+Both build scripts are **idempotent and safe to re-run**:
+
+- `build_packages.sh` looks up each package's expected filename and size via `apt-get download --print-uris`, skips files already on disk at the right size, and replaces stale (truncated/corrupt) ones. Wheels are validated with a zip/tar integrity check before `pip download` runs, so partially-downloaded files from interrupted builds get re-fetched instead of silently shipped.
+- `build_models.sh` checks each HF repo for `refs/main`, complete snapshots, no `*.incomplete` blobs, and at least one ≥ 10 MiB blob (the latter rejects "anonymous-fetch-only-README" snapshots when auth is missing). Pass `FORCE_REDOWNLOAD=1` to bypass.
 
 ### `build_packages.sh` knobs
 
@@ -73,10 +89,13 @@ After both phases finish, the script writes `sha256sums.txt` covering every `.de
 
 | Env var | Default | What it does |
 |---|---|---|
-| `WHISPER_MODELS` | `tiny base small medium large-v3 distil-large-v3` | Whisper variants to grab (Systran/faster-whisper-* repos) |
+| `WHISPER_MODELS` | `tiny base small medium large-v3 distil-large-v3` | Whisper variants to grab. Names map to `Systran/faster-whisper-*` except `distil-*` which use `Systran/faster-distil-whisper-*` (different word order). |
 | `WHISPER_TURBO_REPO` | `deepdml/faster-whisper-large-v3-turbo-ct2` | Override the large-v3-turbo source repo |
-| `GEMMA_MODELS` | `google/gemma-3-1b-it google/translategemma-4b-it google/translategemma-12b-it` | Gemma variants to grab; set empty to skip translation models |
+| `GEMMA_MODELS` | `google/gemma-3-1b-it google/translategemma-4b-it google/translategemma-12b-it google/translategemma-27b-it google/gemma-4-27b-it` | Gemma variants to grab; covers every HF-hosted translate preset. Set empty to skip translation models. |
+| `FORCE_REDOWNLOAD` | `0` | Skip the per-repo completeness check and re-fetch every model |
 | `OFFLINE_DIR` | `<repo>/offline_packages` | Override output location |
+
+**Auth requirement.** Run `hf auth login` (or export `HF_TOKEN`) **before** calling this script. The script only sets `HF_HUB_CACHE` (the cache location) and leaves `HF_HOME` at its default, so the user-level token stored in `~/.cache/huggingface/token` is found. The script logs the token source on startup; if it warns "no HF_TOKEN env var and no token at …", gated Gemma repos will fetch only public files (44 KB README/config) and look "cached" on the next run until you authenticate and re-fetch.
 
 Models live in HuggingFace cache layout under `offline_packages/hf-cache/hub/models--<org>--<name>/...`, so `install.sh` can copy that directly into `~/.cache/huggingface/` on the target.
 
@@ -84,12 +103,16 @@ Models live in HuggingFace cache layout under `offline_packages/hf-cache/hub/mod
 
 ## Phase 2: install on the offline target
 
+Layout assumption: `~/video_ai_subtitle/` is checked out and `~/offline_packages_parts/` is its sibling (matching what `scp -r` produced in Phase 1 step 3). `tar` and `gzip` are needed (both ship with Ubuntu by default); `pv` and `pigz` are not required on the target.
+
 ```bash
-cd video_ai_subtitle
-tar xzf bundle.tgz
+cd ~/video_ai_subtitle
+cat ../offline_packages_parts/bundle.tgz.* | tar xzf -    # restores ./offline_packages/
 bash offline_packages/install.sh
 sudo reboot                    # only if a fresh NVIDIA driver was installed
 ```
+
+Add `v` to the tar flags (`tar xzvf -`) if you want filename-by-filename progress output during extraction.
 
 ### What `install.sh` does
 
@@ -127,12 +150,14 @@ Order-of-magnitude on a typical Ubuntu 22.04 + RTX 4090/5090 build host:
 | `debs/` (~400 .deb files) | 280–320 MB |
 | `nvidia-debs/` (17 files, driver 570) | ~280 MB |
 | `pip-wheels/` (torch+cu128 + 70 deps) | 3.9 GB |
-| `hf-cache/` Whisper variants (tiny..large-v3 + turbo + distil) | ~6 GB |
+| `hf-cache/` Whisper variants (tiny..large-v3 + turbo + distil) | ~10 GB |
 | `hf-cache/` + Gemma 3 1B + TranslateGemma 4B | +12 GB |
-| `hf-cache/` + TranslateGemma 12B (int8 useful preset) | +25 GB |
-| `hf-cache/` + TranslateGemma 27B (only if you'll use `quality` preset) | +54 GB |
+| `hf-cache/` + TranslateGemma 12B (int8 — `balanced` preset) | +25 GB |
+| `hf-cache/` + TranslateGemma 27B (int4 — `quality` preset) | +54 GB |
+| `hf-cache/` + Gemma 4 27B (`gemma4-flagship` preset) | +54 GB |
+| **Default total (all presets)** | **~160 GB** |
 
-A minimal but useful bundle (transcribe-only, single Whisper model, no translation) clocks around **5 GB**. A full kit with TranslateGemma 12B is around **30 GB**.
+A minimal but useful bundle (transcribe-only, single Whisper model, no translation) clocks around **5 GB**. A translate-capable kit with the 4B model and Whisper turbo is around **15 GB**. The two 27B variants are the dominant cost — `GEMMA_MODELS="google/gemma-3-1b-it google/translategemma-4b-it google/translategemma-12b-it"` drops the bundle to ~50 GB while still covering `edge`, `fast`, and `balanced` translate presets.
 
 ---
 
