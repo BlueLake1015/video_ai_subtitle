@@ -1,5 +1,9 @@
 #!/usr/bin/env bash
-# Profile A installer for video_ai_subtitle: NVIDIA driver only (no CUDA toolkit).
+# Online installer for video_ai_subtitle: pulls everything from the network.
+# For an air-gapped install, use offline_packages/build_packages.sh +
+# offline_packages/build_models.sh on an online machine, then run
+# offline_packages/install.sh on the target.
+#
 # Target: Ubuntu 22.04 / 24.04 with an Ada / Hopper / newer NVIDIA GPU (e.g. RTX 4090).
 #
 # What this does:
@@ -25,7 +29,7 @@
 set -euo pipefail
 
 # ---------------- tunables (override via env) ----------------
-TARGET_DRIVER="${TARGET_DRIVER:-560}"   # 555 / 560 / 565 all fine for RTX 4090
+TARGET_DRIVER="${TARGET_DRIVER:-570}"   # 570/580 are what Ubuntu 22.04 ships; both fine for RTX 4090/5090
 PROJECT_DIR="${PROJECT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 VENV_DIR="${VENV_DIR:-$PROJECT_DIR/.venv}"
 PIP_EXTRAS="${PIP_EXTRAS:-translate,quant,dev}"
@@ -118,7 +122,7 @@ setup_user_run() {
 }
 
 # ---------------- preflight ----------------
-log "Profile A installer for video_ai_subtitle"
+log "online installer for video_ai_subtitle"
 log "project dir: $PROJECT_DIR"
 log "target driver: $TARGET_DRIVER"
 [[ "$DRY_RUN" == "1" ]] && warn "DRY_RUN=1 -- printing commands only"

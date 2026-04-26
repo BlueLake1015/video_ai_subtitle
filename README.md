@@ -21,15 +21,22 @@ ffmpeg                    # local file or MPEG2-TS stream
 
 ## 1. Installation
 
+Two paths:
+
+- **[1.A Online](#1a-online-install-recommended)** — single script, target machine has internet access.
+- **[1.B Offline / air-gapped](#1b-offline-air-gapped-install)** — gather a bundle on an online machine, install on a target with no internet.
+
+### 1.A Online install (recommended)
+
 The whole bootstrap is one script. It installs the NVIDIA driver, Python 3.11, ffmpeg, creates `.venv`, and pip-installs the project with the right extras.
 
-### One-shot install (recommended)
+#### One-shot install
 
 ```bash
 git clone <repo-url> video_ai_subtitle
 cd video_ai_subtitle
 
-bash scripts/install_profile_a.sh
+bash scripts/install_online.sh
 # Run as your user. The script will sudo only for apt commands.
 # DO NOT prefix with sudo unless you have to: it auto-de-elevates if you do.
 ```
@@ -45,30 +52,30 @@ nvidia-smi                # should print a table with the GPU and driver version
 What the script does:
 
 1. **OS / GPU preflight** — checks Ubuntu 22.04 / 24.04 and detects the NVIDIA GPU via `lspci`.
-2. **NVIDIA driver** — installs `nvidia-driver-560` (override with `TARGET_DRIVER=…`). Skips when an equal-or-newer driver is already installed.
+2. **NVIDIA driver** — installs `nvidia-driver-570` (override with `TARGET_DRIVER=…`). Skips when an equal-or-newer driver is already installed.
 3. **ffmpeg** — `apt install ffmpeg` if missing.
 4. **Python 3.11** — installs from deadsnakes PPA on 22.04 (24.04 has it in the main archive, with deadsnakes as fallback).
 5. **venv** — creates `.venv` with `python3.11`. If an existing venv was built with a different Python version, it's removed and recreated.
 6. **Project install** — `pip install -e ".[translate,quant,dev]"` inside the venv.
 7. **Verification** — runs `nvidia-smi`; tells you if a reboot is required.
 
-### Override knobs
+#### Override knobs
 
 ```bash
-TARGET_DRIVER=580       bash scripts/install_profile_a.sh   # use a specific driver major
-PYTHON_VERSION=3.12     bash scripts/install_profile_a.sh   # use Python 3.12 instead
+TARGET_DRIVER=580       bash scripts/install_online.sh   # use a specific driver major
+PYTHON_VERSION=3.12     bash scripts/install_online.sh   # use Python 3.12 instead
 PIP_EXTRAS=translate,quant,dev,whispercpp \
-                        bash scripts/install_profile_a.sh   # add the whisper.cpp backend
-RECREATE_VENV=never     bash scripts/install_profile_a.sh   # keep an existing venv as-is
-SKIP_PYTHON=1           bash scripts/install_profile_a.sh   # only do driver/ffmpeg
-DRY_RUN=1               bash scripts/install_profile_a.sh   # preview commands, no changes
+                        bash scripts/install_online.sh   # add the whisper.cpp backend
+RECREATE_VENV=never     bash scripts/install_online.sh   # keep an existing venv as-is
+SKIP_PYTHON=1           bash scripts/install_online.sh   # only do driver/ffmpeg
+DRY_RUN=1               bash scripts/install_online.sh   # preview commands, no changes
 ```
 
-### Manual install (if you can't run the script)
+#### Manual install (if you can't run the script)
 
 ```bash
 # 1. NVIDIA driver (Ubuntu 22.04/24.04)
-sudo apt update && sudo apt install -y nvidia-driver-560
+sudo apt update && sudo apt install -y nvidia-driver-570
 sudo reboot
 
 # 2. Python 3.11 (Ubuntu 22.04 only; 24.04 ships it)
@@ -87,7 +94,7 @@ pip install --upgrade pip wheel setuptools
 pip install -e ".[translate,quant,dev]"
 ```
 
-### Optional extras
+#### Optional extras
 
 | Extra | What it adds | Install |
 |---|---|---|
@@ -99,7 +106,7 @@ pip install -e ".[translate,quant,dev]"
 
 Add via `pip install -e ".[translate,quant,whispercpp,gemini,dev]"` or `make install-all`.
 
-### Verify the install
+#### Verify the install
 
 ```bash
 source .venv/bin/activate
@@ -109,6 +116,82 @@ vas list-presets           # prints transcribe + translate preset names
 nvidia-smi                 # GPU visible, driver version >= 555
 ffmpeg -version | head -1  # ffmpeg >= 4.4
 ```
+
+### 1.B Offline / air-gapped install
+
+For machines with no internet access. Two phases:
+
+**Phase 1 — on an online machine** (same Ubuntu version + same architecture as the offline target):
+
+```bash
+git clone <repo-url> video_ai_subtitle
+cd video_ai_subtitle
+
+# Step 1: gather every .deb (apt) and .whl/.tar.gz (pip) into offline_packages/
+bash offline_packages/build_packages.sh
+
+# Step 2: download Whisper + Gemma model weights into offline_packages/hf-cache/
+#         Set HF_TOKEN first if any Gemma repo is gated for your account.
+bash offline_packages/build_models.sh
+
+# Step 3: ship the bundle to the target
+tar czf bundle.tgz offline_packages/
+scp bundle.tgz user@offline-host:~/video_ai_subtitle/
+```
+
+The package gathering uses `apt-rdepends` to compute the transitive dependency closure of `nvidia-driver-570`, `python3.11`, `ffmpeg`, etc., then `apt-get download` for each. Pip wheels are resolved against the same `cu128` PyTorch index the online installer uses, then frozen into `pip-wheels/requirements.txt` for deterministic offline replay.
+
+**Phase 2 — on the offline target**:
+
+```bash
+cd video_ai_subtitle
+tar xzf bundle.tgz
+bash offline_packages/install.sh
+sudo reboot                    # only if a kernel module .deb was installed
+```
+
+`offline_packages/install.sh` does:
+
+1. `apt-get install` from the local `.deb` pool (apt resolves dependency order from the local files).
+2. `python3.11 -m venv .venv` using the system Python that step 1 just installed.
+3. `pip install --no-index --find-links offline_packages/pip-wheels -r requirements.txt` to install every Python dependency without network access.
+4. Copies `offline_packages/hf-cache/` into `~/.cache/huggingface/` so Whisper and Gemma find weights locally.
+5. Appends `HF_HUB_OFFLINE=1` and `TRANSFORMERS_OFFLINE=1` to `.venv/bin/activate` so future `vas` invocations don't try to phone home.
+
+#### Offline knobs
+
+```bash
+# Build phase (online):
+TARGET_DRIVER=580           bash offline_packages/build_packages.sh
+TORCH_CUDA=cu124            bash offline_packages/build_packages.sh
+PIP_EXTRAS=translate,quant,whispercpp,gemini,dev \
+                            bash offline_packages/build_packages.sh
+WHISPER_MODELS="medium large-v3-turbo" \
+GEMMA_MODELS="google/translategemma-4b-it" \
+                            bash offline_packages/build_models.sh
+GEMMA_MODELS=""             bash offline_packages/build_models.sh   # whisper only
+
+# Install phase (offline target):
+SKIP_DEBS=1                 bash offline_packages/install.sh        # debs already done
+SKIP_PIP=1                  bash offline_packages/install.sh        # python env already there
+SKIP_MODELS=1               bash offline_packages/install.sh        # don't copy HF cache
+HF_CACHE_TARGET=/data/hf    bash offline_packages/install.sh        # custom cache location
+```
+
+#### Bundle size
+
+Plan disk before running the build phase:
+
+| Component | Size |
+|---|---|
+| `debs/` (driver + python + ffmpeg + transitive) | ~700 MB |
+| `pip-wheels/` (torch, transformers, faster-whisper, …) | ~6 GB |
+| `hf-cache/` Whisper variants (tiny..large-v3) | ~6 GB |
+| `hf-cache/` Gemma 1B + TranslateGemma 4B | ~12 GB |
+| `hf-cache/` + TranslateGemma 12B | +25 GB |
+| `hf-cache/` + TranslateGemma 27B | +54 GB |
+
+Trim with `WHISPER_MODELS` / `GEMMA_MODELS` env vars on the build script.
 
 ---
 
@@ -413,7 +496,7 @@ Your venv was built with Python 3.10. Recreate it with 3.11:
 
 ```bash
 sudo rm -rf .venv               # if any files inside are root-owned
-bash scripts/install_profile_a.sh   # rebuilds the venv with python3.11
+bash scripts/install_online.sh   # rebuilds the venv with python3.11
 ```
 
 ### `RuntimeError: The NVIDIA driver on your system is too old (found version 12080)`
@@ -433,8 +516,8 @@ nvidia-smi | grep "CUDA Version"     # e.g. "CUDA Version: 12.8" -> use cu128
 Override the auto-detection on the install script:
 
 ```bash
-TORCH_CUDA=cu124 bash scripts/install_profile_a.sh
-TORCH_CUDA=cpu   bash scripts/install_profile_a.sh   # CPU-only build
+TORCH_CUDA=cu124 bash scripts/install_online.sh
+TORCH_CUDA=cpu   bash scripts/install_online.sh   # CPU-only build
 ```
 
 ### `OSError: libcudart.so.13: cannot open shared object file`
@@ -499,7 +582,14 @@ configs/
   transcribe/*.yaml    transcription presets
   translate/*.yaml     translation presets
 scripts/
-  install_profile_a.sh   one-shot driver + Python 3.11 + venv + project bootstrap
+  install_online.sh    one-shot driver + Python 3.11 + venv + project bootstrap (online)
+  local_file_test.sh   end-to-end run against the bundled fixtures
+  stream_local_file.sh re-streams a local file as MPEG2-TS to loopback for live testing
+offline_packages/
+  build_packages.sh    gathers .deb + .whl files into offline_packages/ on an online machine
+  build_models.sh      downloads Whisper + Gemma model variants into offline_packages/hf-cache/
+  install.sh           installs everything from offline_packages/ on an air-gapped target
+  debs/, pip-wheels/, hf-cache/   populated by the build scripts
 ```
 
 ### Why separate VAD + ~30s segmenter?

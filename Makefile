@@ -29,7 +29,7 @@ help:
 # Create the venv if missing. All other targets depend on it.
 $(VENV)/bin/python:
 	@command -v python$(PYTHON_VERSION) >/dev/null 2>&1 || { \
-		echo "python$(PYTHON_VERSION) not found. Run: bash scripts/install_profile_a.sh"; \
+		echo "python$(PYTHON_VERSION) not found. Run: bash scripts/install_online.sh"; \
 		exit 1; \
 	}
 	python$(PYTHON_VERSION) -m venv $(VENV)

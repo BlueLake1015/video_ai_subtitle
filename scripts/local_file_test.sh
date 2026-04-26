@@ -8,7 +8,7 @@
 # failing command and re-run it directly for debugging.
 #
 # Requirements:
-#   * .venv created and project pip-installed (`bash scripts/install_profile_a.sh`)
+#   * .venv created and project pip-installed (`bash scripts/install_online.sh`)
 #   * NVIDIA driver loaded (`nvidia-smi` must work; reboot after driver install)
 #   * Translation cases additionally need:
 #       - HF_TOKEN set, or `huggingface-cli login` done
@@ -103,7 +103,7 @@ log "out dir:     $OUT_DIR"
 log "language:    $SRC_LANG -> $TGT_LANG"
 
 if [[ ! -d "$VENV_DIR" ]]; then
-    fail "venv not found at $VENV_DIR -- run scripts/install_profile_a.sh first"
+    fail "venv not found at $VENV_DIR -- run scripts/install_online.sh first"
     exit 1
 fi
 VAS="$VENV_DIR/bin/vas"
