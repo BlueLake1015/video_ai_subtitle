@@ -91,24 +91,61 @@ compute_closure() {
     rm -f "$out"
 }
 
+# Look up the expected on-disk filename and size for the candidate version of
+# a package without downloading anything. Echoes "<filename>\t<size>" or empty
+# if the package isn't in apt's cache (virtual / unavailable).
+#
+# `apt-get download --print-uris` prints one line per package:
+#   '<uri>' <filename> <size> [<hash-spec>]
+apt_pkg_info() {
+    local pkg="$1"
+    apt-get download --print-uris "$pkg" 2>/dev/null \
+        | awk '$2 ~ /\.deb$/ { print $2 "\t" $3; exit }'
+}
+
 # Download every package in a newline-separated list (from stdin) into a target
-# directory using `apt-get download`. Virtual packages and unavailable names
-# fail gracefully.
+# directory using `apt-get download`. Idempotent: a file already on disk with
+# the apt-cache-reported size is treated as fresh and skipped. Files that exist
+# but with the wrong size (truncated download, version drift, partial transfer)
+# are deleted and re-fetched. Virtual packages and unavailable names fail
+# gracefully.
 download_into() {
     local target="$1"
     local label="$2"
-    log "[$label] downloading into $target"
-    (
-        cd "$target"
-        while read -r p; do
-            [[ -z "$p" ]] && continue
-            apt-get download "$p" 2>/dev/null || true
-        done
-    )
+    log "[$label] downloading into $target (incremental, size-checked)"
+    local total=0 cached=0 fetched=0 stale=0 failed=0
+    pushd "$target" >/dev/null
+    while read -r p; do
+        [[ -z "$p" ]] && continue
+        total=$((total+1))
+        local meta exp_name exp_size on_disk
+        meta=$(apt_pkg_info "$p")
+        if [[ -n "$meta" ]]; then
+            exp_name="${meta%%$'\t'*}"
+            exp_size="${meta##*$'\t'}"
+            if [[ -f "$exp_name" ]]; then
+                on_disk=$(stat -c%s "$exp_name" 2>/dev/null || echo 0)
+                if [[ "$on_disk" == "$exp_size" ]]; then
+                    cached=$((cached+1))
+                    continue
+                fi
+                warn "[$label] stale: $exp_name ($on_disk B vs expected $exp_size B) -- replacing"
+                rm -f "$exp_name"
+                stale=$((stale+1))
+            fi
+        fi
+        if apt-get download "$p" >/dev/null 2>&1; then
+            fetched=$((fetched+1))
+        else
+            failed=$((failed+1))
+        fi
+    done
+    popd >/dev/null
+    log "[$label] $total seeded -> $cached cached, $fetched fetched, $stale stale-replaced, $failed failed"
     local n size
     n=$(find "$target" -maxdepth 1 -name '*.deb' 2>/dev/null | wc -l)
     size=$(du -sh "$target" 2>/dev/null | cut -f1)
-    log "[$label] gathered $n files ($size)"
+    log "[$label] dir now: $n files ($size)"
 }
 
 # ---------------- detect NVIDIA driver first (its closure feeds debs/) -------
@@ -214,8 +251,8 @@ if [[ "$SKIP_DEBS" != "1" ]]; then
     fi
     log "[debs] $(echo "$DEBS_LIST" | wc -l) unique packages to fetch"
 
-    # Wipe and re-fill so previous runs don't leave nvidia-prefixed leftovers.
-    run "rm -f '$DEBS_DIR'/*.deb"
+    # Don't wipe -- download_into now skips files with matching size. To force a
+    # clean rebuild, delete debs/ and nvidia-debs/ manually before re-running.
     echo "$DEBS_LIST" | download_into "$DEBS_DIR" "debs"
 else
     log "skipping debs (SKIP_DEBS=1)"
@@ -224,7 +261,6 @@ fi
 # ---------------- NVIDIA driver DEBs (nvidia-debs/) ----------------
 if [[ "$SKIP_NVIDIA" != "1" && -n "$NVIDIA_OWN" ]]; then
     log "[nvidia] downloading $(echo "$NVIDIA_OWN" | wc -l) NVIDIA-specific packages -> $NVIDIA_DEBS_DIR"
-    run "rm -f '$NVIDIA_DEBS_DIR'/*.deb"
     echo "$NVIDIA_OWN" | download_into "$NVIDIA_DEBS_DIR" "nvidia"
 elif [[ "$SKIP_NVIDIA" == "1" ]]; then
     log "skipping nvidia debs (SKIP_NVIDIA=1)"
@@ -264,7 +300,48 @@ if [[ "$SKIP_PIP" != "1" ]]; then
             > "$REQ"
     fi
 
+    # Step 3.5: verify wheels already in WHEELS_DIR (from a previous run).
+    # `pip download -d DIR` skips files with matching name+version but does NOT
+    # validate their contents -- a previous Ctrl-C, network drop, or full-disk
+    # event can leave a truncated/empty wheel that pip will then happily skip.
+    # Validate zip/tar integrity now and remove anything broken so pip re-fetches.
+    if [[ "$DRY_RUN" != "1" ]]; then
+        verified=0; corrupt=0; tiny=0
+        while IFS= read -r -d '' f; do
+            verified=$((verified+1))
+            sz=$(stat -c%s "$f" 2>/dev/null || echo 0)
+            if [[ "$sz" -lt 200 ]]; then
+                warn "[wheels] tiny: $(basename "$f") ($sz B) -- removing"
+                rm -f "$f"; tiny=$((tiny+1))
+                continue
+            fi
+            ok=1
+            case "$f" in
+                *.whl)
+                    "$TMPVENV/bin/python" -c '
+import sys, zipfile
+try:
+    z = zipfile.ZipFile(sys.argv[1])
+    sys.exit(0 if z.testzip() is None else 1)
+except Exception:
+    sys.exit(1)
+' "$f" >/dev/null 2>&1 || ok=0
+                    ;;
+                *.tar.gz|*.tgz)
+                    tar -tzf "$f" >/dev/null 2>&1 || ok=0
+                    ;;
+            esac
+            if [[ "$ok" == "0" ]]; then
+                warn "[wheels] corrupt: $(basename "$f") -- removing"
+                rm -f "$f"; corrupt=$((corrupt+1))
+            fi
+        done < <(find "$WHEELS_DIR" -maxdepth 1 -type f \( -name '*.whl' -o -name '*.tar.gz' -o -name '*.tgz' \) -print0)
+        log "[wheels] verified $verified existing files: removed $corrupt corrupt + $tiny tiny"
+    fi
+
     # Step 4: download every wheel matching those exact versions.
+    # pip download skips files already on disk that match the resolved
+    # name+version, so the verification pass above is what guarantees freshness.
     log "downloading wheels into $WHEELS_DIR"
     run "'$TMPVENV/bin/pip' download \
         --index-url https://download.pytorch.org/whl/$TORCH_CUDA \
@@ -325,5 +402,17 @@ if [[ "$DRY_RUN" != "1" ]]; then
 fi
 
 log "DONE."
-log "next: bash offline_packages/build_models.sh   # download model weights"
-log "      tar czf bundle.tgz offline_packages/   # ship to the offline machine"
+log "next:"
+log "  bash offline_packages/build_models.sh                    # download model weights"
+log ""
+log "  # bundle into 1 GiB parts (sudo apt install pv pigz -- pigz is multi-threaded gzip,"
+log "  # 5-10x faster than the single-threaded default; output stays gzip-compatible):"
+log "  mkdir -p ../offline_packages_parts && \\"
+log "    tar cf - offline_packages/ \\"
+log "      | pv -s \$(du -sb offline_packages | cut -f1) \\"
+log "      | pigz \\"
+log "      | split -b 1G -d -a 3 - ../offline_packages_parts/bundle.tgz."
+log ""
+log "  # on the offline machine, after copying offline_packages_parts/ over"
+log "  # (add 'v' to xzf for filename-by-filename progress: tar xzvf -):"
+log "  cat offline_packages_parts/bundle.tgz.* | tar xzf -"
