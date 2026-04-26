@@ -246,9 +246,14 @@ if [[ "$SKIP_PIP" != "1" ]]; then
     log "installing torch ($TORCH_CUDA) into resolver venv"
     run "'$TMPVENV/bin/pip' install -q --index-url https://download.pytorch.org/whl/$TORCH_CUDA torch torchaudio"
 
-    # Step 2: install project + extras (deps from default PyPI; torch is already satisfied).
+    # Step 2: install project + extras. Must keep the CUDA wheel index reachable
+    # via --extra-index-url, otherwise pip re-resolves the [translate] extra's
+    # `torch>=2.2` against default PyPI and silently swaps the +cuXXX wheel from
+    # step 1 for the same-canonical-version +cpu wheel. That would then get
+    # baked into requirements.txt by `pip freeze` in step 3 and shipped to the
+    # air-gapped target as a broken (CPU-only) bundle.
     log "installing project + extras into resolver venv"
-    run "'$TMPVENV/bin/pip' install -q -e '$PROJECT_DIR'[$PIP_EXTRAS]"
+    run "'$TMPVENV/bin/pip' install -q --extra-index-url https://download.pytorch.org/whl/$TORCH_CUDA -e '$PROJECT_DIR'[$PIP_EXTRAS]"
 
     # Step 3: produce a frozen requirements list (excluding the project itself).
     REQ="$WHEELS_DIR/requirements.txt"

@@ -285,6 +285,7 @@ if [[ "$SKIP_PYTHON" != "1" ]]; then
     # Install PyTorch from the CUDA-matched wheel index BEFORE the project, so
     # the project's transitive `torch>=2.2` doesn't pull cu130 from default PyPI
     # (which would fail at runtime on driver-570 / CUDA 12.8 boxes).
+    TCUDA=""
     if [[ ",$PIP_EXTRAS," == *,translate,* || ",$PIP_EXTRAS," == *,all,* ]]; then
         TCUDA=$(detect_torch_cuda_index)
         if [[ "$TCUDA" == "cpu" ]]; then
@@ -296,8 +297,19 @@ if [[ "$SKIP_PYTHON" != "1" ]]; then
         fi
     fi
 
+    # Project install must keep using the same PyTorch wheel index, otherwise
+    # pip's resolver re-fetches torch from default PyPI when processing
+    # `torch>=2.2` from the [translate] extra. Default-PyPI `torch` wheels for
+    # Linux x86_64 are CPU-only since ~2.5, so the cu128 build installed above
+    # gets silently replaced by `torch==X.Y.Z+cpu` (same canonical version, so
+    # pip treats the swap as a no-op upgrade). --extra-index-url keeps the
+    # CUDA-tagged wheel as the preferred candidate.
     log "installing project (extras: $PIP_EXTRAS)"
-    run "$USER_RUN '$VENV_DIR/bin/pip' install -e '$PROJECT_DIR'[$PIP_EXTRAS]"
+    if [[ -n "$TCUDA" && "$TCUDA" != "cpu" ]]; then
+        run "$USER_RUN '$VENV_DIR/bin/pip' install --extra-index-url https://download.pytorch.org/whl/$TCUDA -e '$PROJECT_DIR'[$PIP_EXTRAS]"
+    else
+        run "$USER_RUN '$VENV_DIR/bin/pip' install -e '$PROJECT_DIR'[$PIP_EXTRAS]"
+    fi
 fi
 
 # ---------------- verification ----------------
