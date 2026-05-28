@@ -1,0 +1,9 @@
+name: canary-qwen
+backend: canary_qwen
+model: nvidia/canary-qwen-2.5b
+device: cuda
+compute_type: float16         # -> model.half() on CUDA; CPU runs fp32
+word_timestamps: true         # model emits no timestamps; timings are interpolated
+max_new_tokens: 256
+# English only. The `language` field is ignored by this backend.
+language: en

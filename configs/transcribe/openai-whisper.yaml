@@ -1,0 +1,11 @@
+name: openai-whisper
+backend: openai_whisper
+model: large-v3                # any openai-whisper model name (tiny … large-v3)
+device: cuda
+compute_type: float16         # -> fp16 on CUDA; CPU forces fp32
+beam_size: 5
+best_of: 5                    # only used when temperature > 0 (sampling)
+temperature: 0.0
+condition_on_previous_text: false
+word_timestamps: true
+language: null                # ISO code (en / zh / ja / ko / …) or null to auto-detect

@@ -40,6 +40,16 @@ translate = [
 quant = ["bitsandbytes>=0.43"]
 # whisper.cpp backend.
 whispercpp = ["pywhispercpp>=1.2"]
+# Qwen3-ASR transcription backend.
+qwen = ["qwen-asr>=0.0.6", "torch>=2.2"]
+# Original OpenAI Whisper transcription backend (reference PyTorch implementation).
+openai-whisper = ["openai-whisper>=20231117", "torch>=2.2"]
+# NVIDIA Parakeet-TDT transcription backend (via NeMo). Heavy deps; kept out of the
+# `all` extra on purpose — install on its own when you need it.
+parakeet = ["nemo_toolkit[asr]>=2.4", "torch>=2.2"]
+# NVIDIA Canary-Qwen-2.5B transcription backend (via NeMo SALM). Same heavy NeMo
+# dependency as parakeet; also kept out of `all`.
+canary = ["nemo_toolkit[asr]>=2.5", "torch>=2.2"]
 # Cloud Gemini API translator.
 gemini = ["google-genai>=1.0"]
 # Aggregate "give me everything" extra.
@@ -50,11 +60,15 @@ all = [
     "bitsandbytes>=0.43",
     "pywhispercpp>=1.2",
     "google-genai>=1.0",
+    "qwen-asr>=0.0.6",
+    "openai-whisper>=20231117",
 ]
 dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.23",
     "ruff>=0.4",
+    # WER scoring for the long-form eval sets (tests/data/score_wer.py).
+    "jiwer>=3.0",
 ]
 
 [project.scripts]

@@ -1,0 +1,9 @@
+name: parakeet
+backend: parakeet
+model: nvidia/parakeet-tdt-0.6b-v3
+device: cuda
+compute_type: float16         # -> model.half() on CUDA; CPU runs fp32
+word_timestamps: true
+# English + 24 European languages, auto-detected. NOT Chinese/Japanese/Korean.
+# Parakeet auto-detects language; the `language` field is ignored by this backend.
+language: null

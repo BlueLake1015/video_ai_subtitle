@@ -1,0 +1,12 @@
+name: qwen3-asr
+backend: qwen3_asr
+model: Qwen/Qwen3-ASR-1.7B
+device: cuda
+compute_type: bfloat16        # Qwen3-ASR has no int8 path; bf16 recommended
+word_timestamps: true
+language: null                # auto-detect; or set en / zh / ja / ko / …
+max_new_tokens: 256
+# Real word-level timestamps via the forced-aligner model (~0.6B, extra VRAM +
+# download). Set to null to skip it and interpolate word timings across each VAD
+# segment instead (lighter, but coarser cue timing).
+forced_aligner: Qwen/Qwen3-ForcedAligner-0.6B

@@ -1,0 +1,6 @@
+order	idx	speaker	duration_s	cumulative_start_s	words
+1	0	AimeeMullins	1249.0	0.0	2897
+2	1	BillGates	1505.8	1249.0	4342
+3	4	DanielKahneman	1095.5	2754.8	3015
+4	7	JamesCameron	982.4	3850.4	2972
+5	9	MichaelSpecter	921.1	4832.7	2966

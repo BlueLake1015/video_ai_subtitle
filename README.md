@@ -472,17 +472,64 @@ If you prefer not to use `make`, every target's underlying command is shown in t
 
 ### Transcription (`-t / --transcribe-preset`)
 
-| Preset | Model | Decoding | Notes |
-|---|---|---|---|
-| `tiny` | `tiny` | greedy | fastest; quality limited |
-| `base` | `base` | greedy | |
-| `small` | `small` | beam=5 | |
-| `medium` | `medium` | beam=5 | |
-| `large-v3` | `large-v3` | beam=5 | full multilingual |
-| `large-v3-turbo` | `large-v3-turbo` | beam=5 | **default**, ~6× faster than v3 |
-| `distil-large-v3` | `distil-large-v3` | greedy | English-only, very fast |
-| `quality` | `large-v3` | beam=5, best_of=5, conditioning on | highest accuracy |
-| `low-vram` | `medium` | greedy, int8_float16 | for <8 GB GPUs |
+| Preset | Model | Backend | Decoding | Notes |
+|---|---|---|---|---|
+| `tiny` | `tiny` | faster_whisper | greedy | fastest; quality limited |
+| `base` | `base` | faster_whisper | greedy | |
+| `small` | `small` | faster_whisper | beam=5 | |
+| `medium` | `medium` | faster_whisper | beam=5 | |
+| `large-v3` | `large-v3` | faster_whisper | beam=5 | full multilingual |
+| `large-v3-turbo` | `large-v3-turbo` | faster_whisper | beam=5 | **default**, ~6× faster than v3 |
+| `distil-large-v3` | `distil-large-v3` | faster_whisper | greedy | English-only, very fast |
+| `quality` | `large-v3` | faster_whisper | beam=5, best_of=5, conditioning on | highest accuracy |
+| `low-vram` | `medium` | faster_whisper | greedy, int8_float16 | for <8 GB GPUs |
+| `qwen3-asr` | `Qwen/Qwen3-ASR-1.7B` | qwen3_asr | bf16 | non-Whisper engine; 52 langs (en/zh/ja/ko/…); forced aligner on by default; needs `[qwen]` extra |
+| `openai-whisper` | `large-v3` | openai_whisper | beam=5 | reference OpenAI Whisper (PyTorch); needs `[openai-whisper]` extra |
+| `parakeet` | `nvidia/parakeet-tdt-0.6b-v3` | parakeet | TDT | non-Whisper; English + 24 European langs (NO zh/ja/ko); needs `[parakeet]` extra (NeMo) |
+| `canary-qwen` | `nvidia/canary-qwen-2.5b` | canary_qwen | LLM decode | non-Whisper speech-LLM; **English only**, no timestamps (interpolated); needs `[canary]` extra (NeMo) |
+
+#### ASR backends
+
+The transcribe backend is selected per preset (`backend:` field) or via
+`--asr-backend`. Available: `faster_whisper` (default, CTranslate2), `whisper_cpp`
+(needs `[whispercpp]`), `trt_llm`, `qwen3_asr` (needs `[qwen]`), `openai_whisper`
+(needs `[openai-whisper]`), `parakeet` (needs `[parakeet]`), and `canary_qwen`
+(needs `[canary]`).
+
+`parakeet` is NVIDIA **Parakeet-TDT-0.6B-v3** via the NeMo toolkit — a
+FastConformer-TDT model that tops the Open ASR leaderboard on English
+speed/accuracy. Output is punctuated and capitalized with word-level timestamps.
+It covers **English + 24 European languages** (auto-detected) but **not Chinese,
+Japanese, or Korean** — so it's an English/European alternative, not a
+replacement for the multilingual Whisper/Qwen engines. Install with `pip install
+-e ".[parakeet]"`; the NeMo dependency is large, so it's intentionally **kept out
+of the `[all]` extra**. Runs on PyTorch — same GPU/torch caveat below (or CPU).
+
+`canary_qwen` is NVIDIA **Canary-Qwen-2.5B** via NeMo's `SALM` (a FastConformer
+encoder + Qwen LLM decoder) — tops the Open ASR leaderboard on English *accuracy*.
+**English only**, and the LLM-decoder architecture emits **no timestamps**, so word
+timings are interpolated across each VAD segment (coarser cue boundaries). Heavier
+than parakeet (2.5B). Shares the NeMo dependency; install with `pip install -e
+".[canary]"` (also kept out of `[all]`).
+
+`openai_whisper` is the **reference OpenAI Whisper** implementation (the `whisper`
+PyTorch package) — the same models as `faster_whisper` but OpenAI's own decoding
+and word-timestamp alignment, useful as an accuracy baseline. Slower and heavier
+than CTranslate2; language is an ISO code (or null to auto-detect). Install with
+`pip install -e ".[openai-whisper]"`. Like `qwen3_asr` it runs on PyTorch, so the
+GPU/torch caveat below applies (or run on CPU with `--asr-device cpu`).
+
+`qwen3_asr` uses Alibaba's **Qwen3-ASR-1.7B** via the `qwen-asr` package — a
+non-Whisper, transformer ASR. The base model returns plain (punctuated) text only,
+so the `qwen3-asr` preset enables the `Qwen/Qwen3-ForcedAligner-0.6B` model by
+default (`forced_aligner:` field) for **real word-level timestamps**; the backend
+reattaches punctuation from the full transcript onto the aligned words. Set
+`forced_aligner: null` to skip it (lighter — no extra ~0.6B model / VRAM — but
+word timings are then interpolated across each VAD segment, giving coarser cue
+boundaries). Install with `pip install -e ".[qwen]"`. **Note:** Qwen3-ASR runs on PyTorch, so it needs
+a GPU whose compute capability your installed `torch` build supports — e.g. a
+`torch` wheel built for the GPU's CC, or run on CPU (`--asr-device cpu`). The
+`faster_whisper` backend (CTranslate2) is independent of the torch build.
 
 ### Translation (`-T / --translate-preset`)
 
@@ -591,7 +638,7 @@ src/vas/
   audio/           ffmpeg subprocess + arg builders + live-stream supervisor
   vad/             Silero (batch + streaming, ONNX)
   segment.py       VAD-aware ~30s Whisper-friendly chunker
-  transcribe/      Transcriber protocol + faster-whisper / whisper.cpp / TRT-LLM
+  transcribe/      Transcriber protocol + faster-whisper / whisper.cpp / TRT-LLM / Qwen3-ASR / OpenAI Whisper / Parakeet / Canary-Qwen
   translate/       Translator protocol + transformers / Ollama / Gemini backends
   cues/            word-timing -> cue assembler (linebreaks, duration, gap)
   writers/         SRT, TTML (IMSC1), VTT

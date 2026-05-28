@@ -14,7 +14,10 @@ class TranscribeConfig(BaseModel):
     model_config = ConfigDict(extra="allow")
 
     name: str = "default"
-    backend: Literal["faster_whisper", "whisper_cpp", "trt_llm"] = "faster_whisper"
+    backend: Literal[
+        "faster_whisper", "whisper_cpp", "trt_llm", "qwen3_asr", "openai_whisper",
+        "parakeet", "canary_qwen",
+    ] = "faster_whisper"
     model: str = "large-v3-turbo"
     device: Literal["cuda", "cpu", "auto"] = "cuda"
     compute_type: str = "float16"

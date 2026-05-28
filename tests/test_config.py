@@ -11,7 +11,10 @@ def test_all_transcribe_presets_load():
     for n in names:
         cfg = load_transcribe_preset(n)
         assert cfg.model
-        assert cfg.backend in {"faster_whisper", "whisper_cpp", "trt_llm"}
+        assert cfg.backend in {
+            "faster_whisper", "whisper_cpp", "trt_llm", "qwen3_asr", "openai_whisper",
+            "parakeet", "canary_qwen",
+        }
 
 
 def test_all_translate_presets_load():
