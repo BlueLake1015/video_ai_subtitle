@@ -34,13 +34,13 @@ The build artifacts (`debs/`, `nvidia-debs/`, `pip-wheels/`, `hf-cache/`, `manif
 `target.env` is the **single source of truth** for what the bundle targets — GPU class, CUDA index, torch, and Python versions. All six scripts source it on startup, so you change the target in one place:
 
 ```bash
-: "${TARGET_DRIVER:=570}"      # nvidia driver major (.deb)
-: "${PYTHON_VERSION:=3.11}"    # python series
-: "${TORCH_CUDA:=cu128}"       # PyTorch wheel index (CUDA 12.8)
-: "${TORCH_VERSION:=2.11.0}"   # pinned torch+torchaudio (reproducible)
+: "${TARGET_DRIVER=570}"      # nvidia driver major (.deb)
+: "${PYTHON_VERSION=3.11}"    # python series
+: "${TORCH_CUDA=cu128}"       # PyTorch wheel index (CUDA 12.8)
+: "${TORCH_VERSION=2.11.0}"   # pinned torch+torchaudio (reproducible; "" = latest)
 ```
 
-Default profile = **NVIDIA RTX 4090 (Ada / sm_89)**, Ubuntu 22.04/24.04. Every value is assign-if-unset, so an explicit `VAR=... bash <script>` on the command line overrides the file. To build for a different target without editing the file, point at another profile: `TARGET_ENV=/path/to/v100.env bash …`, or override on the CLI (e.g. a Volta/sm_70 V100 test box: `TORCH_CUDA=cu124 TORCH_VERSION=2.6.0 …`).
+Default profile = **NVIDIA RTX 4090 (Ada / sm_89)**, Ubuntu 22.04/24.04. Each value is **assign-if-unset** (`=`, not `:=` — so an explicit empty value like `TORCH_VERSION=""` is respected, meaning "newest on the index", not overwritten). Any explicit `VAR=... bash <script>` on the command line overrides the file. To build for a different target without editing the file, point at another profile: `TARGET_ENV=/path/to/v100.env bash …`, or override on the CLI (e.g. a Volta/sm_70 V100 test box: `TORCH_CUDA=cu124 TORCH_VERSION=2.6.0 …`).
 
 ## Why `nvidia-debs/` is separate
 
@@ -135,14 +135,33 @@ are a separate opt-in in [`download_3_models.sh`](#download_3_modelssh-knobs)
 
 | Env var | Default | What it does |
 |---|---|---|
-| `WHISPER_MODELS` | `tiny base small medium large-v3 distil-large-v3` | Whisper variants to grab. Names map to `Systran/faster-whisper-*` except `distil-*` which use `Systran/faster-distil-whisper-*` (different word order). |
-| `WHISPER_TURBO_REPO` | `deepdml/faster-whisper-large-v3-turbo-ct2` | Override the large-v3-turbo source repo |
+| `WHISPER_MODELS` | `tiny base small medium large-v3 distil-large-v3` | faster-whisper variants to grab. Names map to `Systran/faster-whisper-*` except `distil-*` (`Systran/faster-distil-whisper-*`). **Set empty (`WHISPER_MODELS=""`) to skip all faster-whisper models** (also skips the turbo repo). |
+| `WHISPER_TURBO_REPO` | `deepdml/faster-whisper-large-v3-turbo-ct2` | Override the large-v3-turbo source repo (empty to skip just turbo) |
 | `GEMMA_MODELS` | `google/gemma-3-1b-it google/translategemma-4b-it google/translategemma-12b-it google/translategemma-27b-it google/gemma-4-27b-it` | Gemma variants to grab; covers every HF-hosted translate preset. Set empty to skip translation models. |
 | `ASR_ENGINE_MODELS` | *(empty)* | **Opt-in.** Space-separated HF repos for the alternative ASR engines → `hf-cache/`. Full set: `Qwen/Qwen3-ASR-1.7B Qwen/Qwen3-ForcedAligner-0.6B nvidia/parakeet-tdt-0.6b-v3 nvidia/canary-qwen-2.5b ibm-granite/granite-speech-4.1-2b` |
 | `OPENAI_WHISPER_MODELS` | *(empty)* | **Opt-in.** openai-whisper model names (e.g. `large-v3`) → `whisper-cache/` (.pt from OpenAI's CDN). Needs the `[openai-whisper]` extra in `$VENV`. |
 | `WHISPERX_ALIGN_LANGS` | *(empty)* | **Opt-in.** Language codes (e.g. `en zh ja ko`) to pre-warm whisperx alignment + Silero VAD → `torch-hub-cache/` (+ non-en align models to `hf-cache/`). Needs the `[whisperx]` extra in `$VENV`. |
 | `FORCE_REDOWNLOAD` | `0` | Skip the per-repo completeness check and re-fetch every model |
 | `OFFLINE_DIR` | `<repo>/offline_packages` | Override output location |
+
+To download **every alternative-engine model and skip faster-whisper + Gemma**
+(i.e. all engines except the two defaults):
+
+```bash
+WHISPER_MODELS="" GEMMA_MODELS="" \
+ASR_ENGINE_MODELS="Qwen/Qwen3-ASR-1.7B Qwen/Qwen3-ForcedAligner-0.6B nvidia/parakeet-tdt-0.6b-v3 nvidia/canary-qwen-2.5b ibm-granite/granite-speech-4.1-2b" \
+OPENAI_WHISPER_MODELS="tiny.en tiny base.en base small.en small medium.en medium large-v1 large-v2 large-v3 large-v3-turbo" \
+WHISPERX_ALIGN_LANGS="en zh ja ko" \
+  bash offline_packages/download_3_models.sh
+```
+
+Notes:
+- The 4 HF engine repos are **ungated** (no token needed). `openai-whisper` and
+  `whisperx` pre-warm only run if those packages are installed in `$VENV` (build
+  with the matching `PIP_EXTRAS`); otherwise they skip with a warning.
+- **whisperx still pulls `Systran/faster-whisper-large-v3`** as its ASR backbone
+  during the align/VAD pre-warm — it's built on faster-whisper. Drop
+  `WHISPERX_ALIGN_LANGS` if you want zero faster-whisper weights.
 
 **Auth requirement.** Run `hf auth login` (or export `HF_TOKEN`) **before** calling this script. The script only sets `HF_HUB_CACHE` (the cache location) and leaves `HF_HOME` at its default, so the user-level token stored in `~/.cache/huggingface/token` is found. The script logs the token source on startup; if it warns "no HF_TOKEN env var and no token at …", gated Gemma repos will fetch only public files (44 KB README/config) and look "cached" on the next run until you authenticate and re-fetch.
 

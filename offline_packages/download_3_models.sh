@@ -43,8 +43,8 @@ HF_CACHE="$OFFLINE_DIR/hf-cache"
 
 # Whisper variants matching configs/transcribe/*.yaml. faster-whisper consumes
 # the Systran-converted CT2 weights; large-v3-turbo lives at a different org.
-WHISPER_MODELS="${WHISPER_MODELS:-tiny base small medium large-v3 distil-large-v3}"
-WHISPER_TURBO_REPO="${WHISPER_TURBO_REPO:-deepdml/faster-whisper-large-v3-turbo-ct2}"
+WHISPER_MODELS="${WHISPER_MODELS-tiny base small medium large-v3 distil-large-v3}"
+WHISPER_TURBO_REPO="${WHISPER_TURBO_REPO-deepdml/faster-whisper-large-v3-turbo-ct2}"
 
 # Gemma variants matching configs/translate/*.yaml. Includes every HF-hosted
 # model referenced by a translate preset:
@@ -56,7 +56,7 @@ WHISPER_TURBO_REPO="${WHISPER_TURBO_REPO:-deepdml/faster-whisper-large-v3-turbo-
 # (ollama-12b and cloud-gemini don't use the HF cache.)
 # The two 27B models are ~50 GB each and gated. Override GEMMA_MODELS to skip
 # them, or set FORCE_REDOWNLOAD=1 to re-fetch a partial snapshot.
-GEMMA_MODELS="${GEMMA_MODELS:-google/gemma-3-1b-it google/translategemma-4b-it google/translategemma-12b-it google/translategemma-27b-it google/gemma-4-27b-it}"
+GEMMA_MODELS="${GEMMA_MODELS-google/gemma-3-1b-it google/translategemma-4b-it google/translategemma-12b-it google/translategemma-27b-it google/gemma-4-27b-it}"
 
 # ---- Alternative ASR engine models (all opt-in: default empty) ----
 # These are the non-default ASR backends (see README §5). They're large and some
