@@ -13,7 +13,7 @@ def test_all_transcribe_presets_load():
         assert cfg.model
         assert cfg.backend in {
             "faster_whisper", "whisper_cpp", "trt_llm", "qwen3_asr", "openai_whisper",
-            "parakeet", "canary_qwen",
+            "parakeet", "canary_qwen", "granite_speech", "whisperx",
         }
 
 

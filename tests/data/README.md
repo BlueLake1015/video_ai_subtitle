@@ -201,6 +201,42 @@ genuine speech, not hallucinations: a reminder that these are candidates to
 eyeball, not confirmed errors. After dedup only ~0.16% of words sit in any
 flagged span.
 
+### Engine benchmark (this set)
+
+All ASR engines run on the same 96-min audio + reference, scored with
+`score_wer.py` (16,192 reference words). Sorted by WER. Times are wall-clock on a
+single Tesla V100 (≈ the slowest hardware we target; faster GPUs are quicker).
+
+| Engine (preset) | WER | sub / del / ins | hyp words | time | multilingual |
+|---|---|---|---|---|---|
+| `qwen3-asr` | **3.88%** | 315 / 249 / 64 | 16007 | ~13 min | yes (zh/ja/ko/…) |
+| `canary-qwen` | 4.64% | 324 / 342 / 85 | 15935 | ~20 min | no (English) |
+| `large-v3-turbo` | 4.92% | 308 / 417 / 72 | 15847 | ~3 min | yes |
+| `parakeet` | 4.92% | 335 / 199 / 263 | 16256 | **2.0 min** ⚡ | no (en + 24 EU) |
+| `openai-whisper` | 5.24% | 317 / 448 / 84 | 15828 | ~22 min 🐌 | yes |
+| `whisperx` | 5.43% | 298 / 531 / 51 | 15712 | 3.8 min | yes (+ word align) |
+| `granite-speech` | 5.52% | 334 / 506 / 53 | 15739 | ~18 min | en/fr/de/es/pt/ja |
+
+Notes:
+- **qwen3-asr** is the most accurate here *and* multilingual with real word
+  timestamps — the best all-round pick. **parakeet** matches turbo's WER at ~2 min
+  (fastest by far) but is English/EU-only. **openai-whisper** is both slower and
+  *less* accurate than `large-v3-turbo` on the same large-v3 model (CTranslate2
+  beats the reference impl). **whisperx**'s value is timestamp accuracy (forced
+  alignment), not peak WER. All engines were hallucination-clean (flags are
+  genuine `thank you`s, not errors).
+- This is clean-ish English read/spoken talks; rankings shift on noisier or
+  multi-domain audio. English-only engines (`parakeet`, `canary-qwen`,
+  `granite-speech` for zh/ko) can't serve the zh→en / en→ko / zh→ko use cases.
+- `whisper_cpp` and `trt_llm` are not benchmarked here (need a ggml build / a
+  built TRT engine).
+
+Reproduce any row with:
+```bash
+vas subtitle tests/data/tedlium_5talks_en.m4a -o /tmp/ted.<engine>.srt -t <preset> --src-lang en
+python tests/data/score_wer.py --hyp /tmp/ted.<engine>.srt --ref tests/data/tedlium_5talks_en_reference.txt
+```
+
 ---
 
 ## Downloading / regenerating

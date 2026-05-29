@@ -24,4 +24,10 @@ def build_transcriber(cfg):
     if cfg.backend == "canary_qwen":
         from .canary_qwen import CanaryQwenTranscriber
         return CanaryQwenTranscriber(cfg)
+    if cfg.backend == "granite_speech":
+        from .granite_speech import GraniteSpeechTranscriber
+        return GraniteSpeechTranscriber(cfg)
+    if cfg.backend == "whisperx":
+        from .whisperx_engine import WhisperXTranscriber
+        return WhisperXTranscriber(cfg)
     raise ValueError(f"Unknown transcribe backend: {cfg.backend!r}")

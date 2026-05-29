@@ -1,0 +1,10 @@
+name: whisperx
+backend: whisperx
+model: Systran/faster-whisper-large-v3   # CT2 build used by WhisperX's ASR step
+device: cuda
+compute_type: float16         # CT2 compute type (float16 / int8 / float32)
+word_timestamps: true         # via WhisperX wav2vec2 forced alignment
+batch_size: 16                # WhisperX batched inference
+# Self-contained engine: runs WhisperX's own VAD + batching + alignment on the
+# whole file and bypasses this project's VAD/segmenter (consumes_full_audio).
+language: null                # ISO code (en/zh/ja/ko/…) or null to auto-detect

@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Online installer for video_ai_subtitle: pulls everything from the network.
-# For an air-gapped install, use offline_packages/build_packages.sh +
-# offline_packages/build_models.sh on an online machine, then run
-# offline_packages/install.sh on the target.
+# For an air-gapped install, use offline_packages/download_1_ubuntu_packages.sh +
+# download_2_python_packages.sh + download_3_models.sh on an online machine, then run
+# offline_packages/install_{1_ubuntu_packages,2_python_packages,3_models}.sh in
+# order on the target.
 #
 # Target: Ubuntu 22.04 / 24.04 with an Ada / Hopper / newer NVIDIA GPU (e.g. RTX 4090).
 #

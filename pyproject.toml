@@ -50,13 +50,23 @@ parakeet = ["nemo_toolkit[asr]>=2.4", "torch>=2.2"]
 # NVIDIA Canary-Qwen-2.5B transcription backend (via NeMo SALM). Same heavy NeMo
 # dependency as parakeet; also kept out of `all`.
 canary = ["nemo_toolkit[asr]>=2.5", "torch>=2.2"]
+# IBM Granite-Speech transcription backend (HF transformers; needs transformers
+# >=4.57 which registers the granite_speech model type).
+granite = ["transformers>=4.57", "torchaudio>=2.2", "torch>=2.2"]
+# WhisperX engine (faster-whisper ASR + wav2vec2 forced alignment). Self-contained
+# pipeline; pulls its own faster-whisper/ctranslate2/pyannote + alignment deps, so
+# it's kept out of `all`. On GPUs needing an older torch (e.g. Volta/sm_70 → torch
+# 2.6), recent whisperx's pyannote-audio>=4 forces torch>=2.7; see the README ASR
+# backends note for the `--no-deps` + `pyannote.audio<4` workaround there.
+whisperx = ["whisperx>=3.1", "nltk", "pandas", "torch>=2.2"]
 # Cloud Gemini API translator.
 gemini = ["google-genai>=1.0"]
 # Aggregate "give me everything" extra.
 all = [
-    "transformers>=4.45",
+    "transformers>=4.57",
     "accelerate>=0.30",
     "torch>=2.2",
+    "torchaudio>=2.2",
     "bitsandbytes>=0.43",
     "pywhispercpp>=1.2",
     "google-genai>=1.0",

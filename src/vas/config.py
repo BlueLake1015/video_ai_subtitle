@@ -16,7 +16,7 @@ class TranscribeConfig(BaseModel):
     name: str = "default"
     backend: Literal[
         "faster_whisper", "whisper_cpp", "trt_llm", "qwen3_asr", "openai_whisper",
-        "parakeet", "canary_qwen",
+        "parakeet", "canary_qwen", "granite_speech", "whisperx",
     ] = "faster_whisper"
     model: str = "large-v3-turbo"
     device: Literal["cuda", "cpu", "auto"] = "cuda"

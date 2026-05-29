@@ -6,7 +6,9 @@ Subtitle generation from video. Pipeline:
 ffmpeg                    # local file or MPEG2-TS stream
   -> Silero VAD
   -> ~30s segmenter       # silence-aligned chunks Whisper likes
-  -> Whisper              # faster-whisper / whisper.cpp / TRT-LLM
+  -> ASR                  # faster-whisper (default) / whisper.cpp / TRT-LLM /
+                          #   Qwen3-ASR / OpenAI Whisper / Parakeet / Canary-Qwen /
+                          #   Granite-Speech / WhisperX  (see §5 ASR backends)
   -> cue assembler
   -> Gemma translation    # optional (TranslateGemma / Gemma 3/4 / Gemini cloud)
   -> SRT / TTML / VTT
@@ -102,9 +104,23 @@ pip install -e ".[translate,quant,dev]"
 | `quant`     | bitsandbytes for int8/int4 Gemma quantization on a 24 GB GPU | recommended |
 | `whispercpp`| `pywhispercpp` for the whisper.cpp ASR backend | optional |
 | `gemini`    | Cloud Gemini translation backend | optional |
-| `dev`       | pytest, pytest-asyncio, ruff | for development |
+| `dev`       | pytest, pytest-asyncio, ruff, **jiwer** (WER scoring) | for development |
 
-Add via `pip install -e ".[translate,quant,whispercpp,gemini,dev]"` or `make install-all`.
+Alternative ASR engines (each opt-in; see [§5 ASR backends](#asr-backends)):
+
+| Extra | ASR backend it enables | Notes |
+|---|---|---|
+| `qwen` | `qwen3_asr` — Qwen3-ASR-1.7B | multilingual incl. zh/ja/ko; forced aligner |
+| `openai-whisper` | `openai_whisper` — reference OpenAI Whisper | multilingual baseline |
+| `parakeet` | `parakeet` — NVIDIA Parakeet-TDT (NeMo) | en + 24 EU; fastest; heavy NeMo dep |
+| `canary` | `canary_qwen` — NVIDIA Canary-Qwen-2.5B (NeMo) | English only; heavy NeMo dep |
+| `granite` | `granite_speech` — IBM Granite-Speech-4.1-2B | en/fr/de/es/pt/ja |
+| `whisperx` | `whisperx` — faster-whisper + wav2vec2 alignment | self-contained; precise word timing |
+
+Add the defaults via `pip install -e ".[translate,quant,whispercpp,gemini,dev]"` or
+`make install-all` (which is `[all,dev]` — note `parakeet`/`canary`/`whisperx` are
+**not** in `[all]` because of their heavy/conflicting deps; install those
+individually, e.g. `pip install -e ".[qwen]"`).
 
 #### Verify the install
 
@@ -127,14 +143,17 @@ For machines with no internet access. Two phases:
 git clone <repo-url> video_ai_subtitle
 cd video_ai_subtitle
 
-# Step 1: gather every .deb (apt) and .whl/.tar.gz (pip) into offline_packages/
-bash offline_packages/build_packages.sh
+# Step 1a: gather every .deb (apt packages, transitive) into offline_packages/debs
+bash offline_packages/download_1_ubuntu_packages.sh
+
+# Step 1b: gather every .whl/.tar.gz (pip) into offline_packages/pip-wheels
+bash offline_packages/download_2_python_packages.sh
 
 # Step 2: download Whisper + Gemma model weights into offline_packages/hf-cache/
 #         Authenticate first — gated Gemma repos silently fetch only README/config
 #         when the HF token is missing, leaving the snapshot suspiciously small.
 hf auth login                 # or: export HF_TOKEN=hf_xxx
-bash offline_packages/build_models.sh
+bash offline_packages/download_3_models.sh
 
 # Step 3: split into 1 GiB parts under ../offline_packages_parts/ and ship
 sudo apt install pv pigz       # progress bar + parallel gzip (much faster than vanilla gzip)
@@ -147,35 +166,42 @@ tar cf - offline_packages/ \
 scp -r ../offline_packages_parts user@offline-host:~/
 ```
 
-Both build scripts are **idempotent**: rerun them after a partial transfer or when adding a new variant and they skip what's already on disk (apt packages by `apt-cache` size match; HF repos by completeness check). Pass `FORCE_REDOWNLOAD=1` to `build_models.sh` to bypass the model cache. The package gathering uses `apt-rdepends` for the transitive closure of `nvidia-driver-570`, `python3.11`, `ffmpeg`, etc., and pip wheels are resolved against the same `cu128` PyTorch index the online installer uses, then frozen into `pip-wheels/requirements.txt` for deterministic offline replay.
+The build profile — target GPU, CUDA index, torch + Python versions — lives in one file, [`offline_packages/target.env`](offline_packages/target.env) (defaults to the RTX 4090 / sm_89 target), which all the scripts source; change the target there once, or override per-run on the CLI.
+
+The download scripts are **idempotent**: rerun them after a partial transfer or when adding a new variant and they skip what's already on disk (apt packages by `apt-cache` size match; HF repos by completeness check). Pass `FORCE_REDOWNLOAD=1` to `download_3_models.sh` to bypass the model cache. The package gathering uses `apt-rdepends` for the transitive closure of `nvidia-driver-570`, `python3.11`, `ffmpeg`, etc., and pip wheels are resolved against the same `cu128` PyTorch index the online installer uses, then frozen into `pip-wheels/requirements.txt` for deterministic offline replay.
 
 **Phase 2 — on the offline target** (assumes `~/video_ai_subtitle/` is checked out and `~/offline_packages_parts/` is its sibling, as scp'd above):
 
 ```bash
 cd ~/video_ai_subtitle
 cat ../offline_packages_parts/bundle.tgz.* | tar xzf -    # restores ./offline_packages/
-bash offline_packages/install.sh
-sudo reboot                    # only if a kernel module .deb was installed
+# Run the three install steps IN ORDER (the numbered names are the order):
+bash offline_packages/install_1_ubuntu_packages.sh        # apt: nvidia + generic debs
+sudo reboot                                                # only if a kernel module .deb was installed
+bash offline_packages/install_2_python_packages.sh        # venv + pip wheels
+bash offline_packages/install_3_models.sh                 # copy model caches
 ```
 
 The offline target needs `tar` and `gzip` (both ship with Ubuntu by default); `pv` and `pigz` are not required there.
 
-`offline_packages/install.sh` does:
+The three install steps do:
 
-1. `apt-get install` from the local `.deb` pool (apt resolves dependency order from the local files).
-2. `python3.11 -m venv .venv` using the system Python that step 1 just installed.
-3. `pip install --no-index --find-links offline_packages/pip-wheels -r requirements.txt` to install every Python dependency without network access.
-4. Copies `offline_packages/hf-cache/` into `~/.cache/huggingface/` so Whisper and Gemma find weights locally.
-5. Appends `HF_HUB_OFFLINE=1` and `TRANSFORMERS_OFFLINE=1` to `.venv/bin/activate` so future `vas` invocations don't try to phone home.
+1. **`install_1_ubuntu_packages.sh`** — `apt-get install` from the local `.deb` pool (nvidia-debs first, then generic; apt resolves order from the local files).
+2. **`install_2_python_packages.sh`** — `python3.11 -m venv .venv` using the system Python from step 1, then `pip install --no-index --find-links offline_packages/pip-wheels -r requirements.txt`, then appends `HF_HUB_OFFLINE=1` / `TRANSFORMERS_OFFLINE=1` to `.venv/bin/activate`.
+3. **`install_3_models.sh`** — copies `hf-cache/` into `~/.cache/huggingface/` (and the optional `whisper-cache/` / `torch-hub-cache/`) so models are found locally.
 
 #### Offline knobs
 
 ```bash
 # Build phase (online):
-TARGET_DRIVER=580           bash offline_packages/build_packages.sh
-TORCH_CUDA=cu124            bash offline_packages/build_packages.sh
+TARGET_DRIVER=580           bash offline_packages/download_1_ubuntu_packages.sh   # apt: driver major
+TORCH_CUDA=cu124            bash offline_packages/download_2_python_packages.sh   # pip: CUDA wheel index
 PIP_EXTRAS=translate,quant,whispercpp,gemini,dev \
-                            bash offline_packages/build_packages.sh
+                            bash offline_packages/download_2_python_packages.sh   # pip: extras
+# Default torch = newest cu128 wheel (correct for the RTX 4090 target). Pin for
+# reproducible builds, or for an older GPU — e.g. a V100 (Volta) test box:
+TORCH_CUDA=cu124 TORCH_VERSION=2.6.0 \
+                            bash offline_packages/download_2_python_packages.sh
 
 # Default WHISPER_MODELS covers all 7 transcribe presets (tiny / base / small /
 # medium / large-v3 / distil-large-v3 / large-v3-turbo). Default GEMMA_MODELS
@@ -184,15 +210,22 @@ PIP_EXTRAS=translate,quant,whispercpp,gemini,dev \
 # Trim either to skip variants you won't use:
 WHISPER_MODELS="medium large-v3-turbo" \
 GEMMA_MODELS="google/translategemma-4b-it" \
-                            bash offline_packages/build_models.sh
-GEMMA_MODELS=""             bash offline_packages/build_models.sh   # whisper only
-FORCE_REDOWNLOAD=1          bash offline_packages/build_models.sh   # bypass HF skip-if-cached
+                            bash offline_packages/download_3_models.sh
+GEMMA_MODELS=""             bash offline_packages/download_3_models.sh   # whisper only
+FORCE_REDOWNLOAD=1          bash offline_packages/download_3_models.sh   # bypass HF skip-if-cached
 
-# Install phase (offline target):
-SKIP_DEBS=1                 bash offline_packages/install.sh        # debs already done
-SKIP_PIP=1                  bash offline_packages/install.sh        # python env already there
-SKIP_MODELS=1               bash offline_packages/install.sh        # don't copy HF cache
-HF_CACHE_TARGET=/data/hf    bash offline_packages/install.sh        # custom cache location
+# Alternative ASR engines are opt-in (default off). Enable per engine:
+ASR_ENGINE_MODELS="Qwen/Qwen3-ASR-1.7B Qwen/Qwen3-ForcedAligner-0.6B \
+  nvidia/parakeet-tdt-0.6b-v3 nvidia/canary-qwen-2.5b \
+  ibm-granite/granite-speech-4.1-2b" \
+                            bash offline_packages/download_3_models.sh   # HF engines -> hf-cache/
+OPENAI_WHISPER_MODELS="large-v3"   bash offline_packages/download_3_models.sh   # .pt -> whisper-cache/
+WHISPERX_ALIGN_LANGS="en zh ja ko" bash offline_packages/download_3_models.sh   # align+VAD -> torch-hub-cache/
+
+# Install phase (offline target) — run only the steps you need; each is its own script:
+SKIP_NVIDIA_DEBS=1       bash offline_packages/install_1_ubuntu_packages.sh   # target already has a driver
+HF_CACHE_TARGET=/data/hf bash offline_packages/install_3_models.sh            # custom cache location
+DRY_RUN=1                bash offline_packages/install_2_python_packages.sh   # preview, no changes
 ```
 
 #### Bundle size
@@ -276,6 +309,29 @@ KEEP_OUTPUTS=0             bash scripts/local_file_test.sh           # wipe outp
 `bash scripts/local_file_test.sh --help` prints the usage block at the top of the script.
 
 For HF token / Gemma license setup (required to enable translation cases), see section 6 (Troubleshooting).
+
+### 2.2 Long-form evaluation (WER + hallucination)
+
+[`tests/data/`](tests/data/) holds >1-hour real-world clips for stress-testing the
+full pipeline (gitignored except the small audio-only film + TED-LIUM set):
+
+- A public-domain feature film (*Night of the Living Dead*) for **robustness** —
+  does the pipeline survive 90+ min of real multi-speaker audio?
+- A 5-talk **TED-LIUM** set with a verbatim reference transcript for **accuracy**.
+
+[`tests/data/score_wer.py`](tests/data/score_wer.py) scores a transcript against
+the reference (WER + a breakdown) **and flags ASR hallucinations** — repetition
+loops, duplicate/scattered repeated cues, phantom phrases, and insertion clusters.
+Run with `--ref` for WER, or omit `--ref` for hallucination-only (e.g. the film,
+which has no ground truth):
+
+```bash
+vas subtitle tests/data/tedlium_5talks_en.m4a -o /tmp/ted.srt -t large-v3-turbo --src-lang en
+python tests/data/score_wer.py --hyp /tmp/ted.srt --ref tests/data/tedlium_5talks_en_reference.txt
+```
+
+[`tests/data/README.md`](tests/data/README.md) documents provenance, regeneration,
+and a **WER + speed benchmark of all the ASR engines** on the TED-LIUM set.
 
 ---
 
@@ -487,14 +543,17 @@ If you prefer not to use `make`, every target's underlying command is shown in t
 | `openai-whisper` | `large-v3` | openai_whisper | beam=5 | reference OpenAI Whisper (PyTorch); needs `[openai-whisper]` extra |
 | `parakeet` | `nvidia/parakeet-tdt-0.6b-v3` | parakeet | TDT | non-Whisper; English + 24 European langs (NO zh/ja/ko); needs `[parakeet]` extra (NeMo) |
 | `canary-qwen` | `nvidia/canary-qwen-2.5b` | canary_qwen | LLM decode | non-Whisper speech-LLM; **English only**, no timestamps (interpolated); needs `[canary]` extra (NeMo) |
+| `granite-speech` | `ibm-granite/granite-speech-4.1-2b` | granite_speech | LLM decode | non-Whisper speech-LLM; en/fr/de/es/pt/**ja** ASR (no zh/ko); no timestamps (interpolated); needs `[granite]` extra |
+| `whisperx` | `Systran/faster-whisper-large-v3` | whisperx | self-contained | faster-whisper ASR + wav2vec2 forced alignment; runs its **own** VAD/batching/align (skips this project's VAD/segmenter); needs `[whisperx]` extra |
 
 #### ASR backends
 
 The transcribe backend is selected per preset (`backend:` field) or via
 `--asr-backend`. Available: `faster_whisper` (default, CTranslate2), `whisper_cpp`
 (needs `[whispercpp]`), `trt_llm`, `qwen3_asr` (needs `[qwen]`), `openai_whisper`
-(needs `[openai-whisper]`), `parakeet` (needs `[parakeet]`), and `canary_qwen`
-(needs `[canary]`).
+(needs `[openai-whisper]`), `parakeet` (needs `[parakeet]`), `canary_qwen`
+(needs `[canary]`), `granite_speech` (needs `[granite]`), and `whisperx`
+(needs `[whisperx]`).
 
 `parakeet` is NVIDIA **Parakeet-TDT-0.6B-v3** via the NeMo toolkit — a
 FastConformer-TDT model that tops the Open ASR leaderboard on English
@@ -511,6 +570,31 @@ encoder + Qwen LLM decoder) — tops the Open ASR leaderboard on English *accura
 timings are interpolated across each VAD segment (coarser cue boundaries). Heavier
 than parakeet (2.5B). Shares the NeMo dependency; install with `pip install -e
 ".[canary]"` (also kept out of `[all]`).
+
+`granite_speech` is IBM **Granite-Speech-4.1-2B** via HuggingFace transformers (a
+conformer encoder + Granite LLM decoder). ASR for **English, French, German,
+Spanish, Portuguese, and Japanese** (no Chinese/Korean ASR). Punctuated/capitalized
+output; the base model emits **no timestamps** (interpolated — the `-plus` variant
+adds them). It's transformers-based (no NeMo) and `granite_speech` is registered in
+transformers ≥4.57. Install with `pip install -e ".[granite]"`.
+
+`whisperx` is **WhisperX** — faster-whisper ASR + **wav2vec2 forced alignment** for
+accurate word timestamps (alignment covers en/zh/ja/ko + ~40 langs). Unlike the
+other backends it is **self-contained**: it runs its *own* Silero VAD, batched
+transcription, and alignment over the whole file. The batch pipeline detects its
+`consumes_full_audio` flag and **bypasses this project's VAD + segmenter** for it
+(no double VAD); all other backends keep the normal VAD→segmenter path. Default ASR
+model is the CT2 build `Systran/faster-whisper-large-v3`. Install with `pip install
+-e ".[whisperx]"`.
+
+> **Volta/older-GPU install note.** Recent WhisperX depends on `pyannote-audio>=4`,
+> which forces `torch>=2.7` — that drops Volta (sm_70) support and would break the
+> torch engines on such GPUs. On a box pinned to torch 2.6 (e.g. a V100), install
+> WhisperX without disturbing the rest:
+> `pip install --no-deps whisperx && pip install "pyannote.audio<4" nltk pandas`
+> (with torch/torchaudio/ctranslate2/faster-whisper pinned to their current
+> versions). On the documented target (RTX 4090+, torch cu128) the plain
+> `pip install -e ".[whisperx]"` works as-is.
 
 `openai_whisper` is the **reference OpenAI Whisper** implementation (the `whisper`
 PyTorch package) — the same models as `faster_whisper` but OpenAI's own decoding
@@ -638,7 +722,7 @@ src/vas/
   audio/           ffmpeg subprocess + arg builders + live-stream supervisor
   vad/             Silero (batch + streaming, ONNX)
   segment.py       VAD-aware ~30s Whisper-friendly chunker
-  transcribe/      Transcriber protocol + faster-whisper / whisper.cpp / TRT-LLM / Qwen3-ASR / OpenAI Whisper / Parakeet / Canary-Qwen
+  transcribe/      Transcriber protocol + faster-whisper / whisper.cpp / TRT-LLM / Qwen3-ASR / OpenAI Whisper / Parakeet / Canary-Qwen / Granite-Speech / WhisperX
   translate/       Translator protocol + transformers / Ollama / Gemini backends
   cues/            word-timing -> cue assembler (linebreaks, duration, gap)
   writers/         SRT, TTML (IMSC1), VTT
@@ -654,9 +738,12 @@ scripts/
   local_file_test.sh   end-to-end run against the bundled fixtures
   stream_local_file.sh re-streams a local file as MPEG2-TS to loopback for live testing
 offline_packages/
-  build_packages.sh    gathers .deb + .whl files into offline_packages/ on an online machine
-  build_models.sh      downloads Whisper + Gemma model variants into offline_packages/hf-cache/
-  install.sh           installs everything from offline_packages/ on an air-gapped target
+  download_1_ubuntu_packages.sh  gathers .deb files (apt closure) into offline_packages/debs on an online machine
+  download_2_python_packages.sh  gathers .whl/.tar.gz files into offline_packages/pip-wheels on an online machine
+  download_3_models.sh      downloads Whisper + Gemma model variants into offline_packages/hf-cache/
+  install_1_ubuntu_packages.sh  offline target: install nvidia + generic .debs (step 1)
+  install_2_python_packages.sh  offline target: create venv + install pip wheels (step 2)
+  install_3_models.sh           offline target: copy model caches into place (step 3)
   debs/, pip-wheels/, hf-cache/   populated by the build scripts
 ```
 

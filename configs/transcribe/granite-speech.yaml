@@ -1,0 +1,11 @@
+name: granite-speech
+backend: granite_speech
+model: ibm-granite/granite-speech-4.1-2b
+device: cuda
+compute_type: float16         # model is bf16-native; float16 chosen for Volta GPUs
+beam_size: 1                  # -> num_beams; do_sample is always off (greedy/beam)
+word_timestamps: true         # base model emits none; timings are interpolated
+max_new_tokens: 256
+# ASR for en / fr / de / es / pt / ja (no Chinese/Korean ASR). The model
+# transcribes whatever is spoken; the `language` field is ignored by this backend.
+language: null

@@ -1,40 +1,46 @@
 #!/usr/bin/env bash
-# Gather every .deb (apt) and .whl/.tar.gz (pip) needed to install the project
-# on an air-gapped target machine. Run this on a machine that DOES have
-# internet access, ideally with the same Ubuntu version + GPU class as the
-# offline target. Produces:
+# Gather every .deb (apt packages, transitive closure) needed to install the
+# project on an air-gapped Ubuntu target. Run on a machine that DOES have
+# internet, ideally same Ubuntu version + GPU class as the offline target.
+#
+# This is the APT half of the bundle. For Python wheels run
+# `download_2_python_packages.sh`. Produces:
 #
 #   offline_packages/
-#     debs/                           *.deb        (apt packages, transitive)
-#     pip-wheels/                     *.whl, *.tar.gz, requirements.txt
-#     manifest.txt                    inventory & versions
+#     debs/                  *.deb   (generic OS packages: ffmpeg, python, headers, …)
+#     nvidia-debs/           *.deb   (NVIDIA driver, install before debs/)
+#     manifest_ubuntu.txt    inventory of the apt artifacts
 #
 # Usage:
-#   bash offline_packages/build_packages.sh
+#   bash offline_packages/download_1_ubuntu_packages.sh
 #
 # Knobs (env vars):
-#   TARGET_DRIVER=560        nvidia-driver major to gather (default 560)
-#   PYTHON_VERSION=3.11      python series to gather   (default 3.11)
-#   TORCH_CUDA=cu128         which PyTorch wheel index (default cu128 = CUDA 12.8)
-#   PIP_EXTRAS=translate,quant,dev,whispercpp,gemini    extras to resolve
+#   TARGET_DRIVER=560        nvidia-driver major to gather (default auto-detect)
+#   PYTHON_VERSION=3.11      python series debs to gather  (default 3.11)
+#   TARGET_KERNEL=auto       kernel for DKMS headers: auto | "" (skip) | X.Y.Z-N-generic
 #   OFFLINE_DIR=path/        output directory (default $PROJECT_DIR/offline_packages)
-#   SKIP_DEBS=1              don't gather .debs (already have them)
-#   SKIP_PIP=1               don't gather wheels
+#   SKIP_DEBS=1              don't gather generic .debs
+#   SKIP_NVIDIA=1            don't gather nvidia-driver .debs
 #   DRY_RUN=1                preview, don't execute
 
 set -euo pipefail
 
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 OFFLINE_DIR="${OFFLINE_DIR:-$PROJECT_DIR/offline_packages}"
-# NVIDIA driver: defaults to whatever is currently loaded on this build host
-# (read via nvidia-smi). Override with TARGET_DRIVER=570 to pin a specific major.
+
+# Shared build profile (target GPU / CUDA / torch / python). Values there are
+# assign-if-unset, so explicit `VAR=... bash <script>` overrides still win.
+TARGET_ENV="${TARGET_ENV:-$PROJECT_DIR/offline_packages/target.env}"
+[[ -f "$TARGET_ENV" ]] && source "$TARGET_ENV"
+
+# NVIDIA driver major. Normally set by target.env (570 for the RTX 4090 target).
+# If target.env is absent, falls back to "auto" = detect this build host's driver
+# via nvidia-smi (only correct when build host == target). Override per-run with
+# TARGET_DRIVER=NNN.
 TARGET_DRIVER="${TARGET_DRIVER:-auto}"
 PYTHON_VERSION="${PYTHON_VERSION:-3.11}"
-TORCH_CUDA="${TORCH_CUDA:-cu128}"
-PIP_EXTRAS="${PIP_EXTRAS:-translate,quant,dev}"
 SKIP_DEBS="${SKIP_DEBS:-0}"
 SKIP_NVIDIA="${SKIP_NVIDIA:-0}"   # 1 = don't gather nvidia-driver debs
-SKIP_PIP="${SKIP_PIP:-0}"
 DRY_RUN="${DRY_RUN:-0}"
 # Target kernel for DKMS (nvidia-dkms-XXX-open builds the kernel module against
 # linux-headers-$(uname -r) at install time on the offline host).
@@ -43,7 +49,7 @@ DRY_RUN="${DRY_RUN:-0}"
 #   5.15.0-176-generic -> explicit kernel version of the offline target
 TARGET_KERNEL="${TARGET_KERNEL:-auto}"
 
-log()  { printf '\033[1;36m[bundle]\033[0m %s\n' "$*"; }
+log()  { printf '\033[1;36m[ubuntu]\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33m[warn  ]\033[0m %s\n' "$*" >&2; }
 die()  { printf '\033[1;31m[err   ]\033[0m %s\n' "$*" >&2; exit 1; }
 run()  { if [[ "$DRY_RUN" == "1" ]]; then printf '\033[2m+ %s\033[0m\n' "$*"; else eval "$@"; fi; }
@@ -55,16 +61,13 @@ run()  { if [[ "$DRY_RUN" == "1" ]]; then printf '\033[2m+ %s\033[0m\n' "$*"; el
 mkdir -p "$OFFLINE_DIR"
 DEBS_DIR="$OFFLINE_DIR/debs"
 NVIDIA_DEBS_DIR="$OFFLINE_DIR/nvidia-debs"
-WHEELS_DIR="$OFFLINE_DIR/pip-wheels"
-MANIFEST="$OFFLINE_DIR/manifest.txt"
-mkdir -p "$DEBS_DIR" "$NVIDIA_DEBS_DIR" "$WHEELS_DIR"
+MANIFEST="$OFFLINE_DIR/manifest_ubuntu.txt"
+mkdir -p "$DEBS_DIR" "$NVIDIA_DEBS_DIR"
 
 log "project:        $PROJECT_DIR"
 log "offline dir:    $OFFLINE_DIR"
 log "target driver:  $TARGET_DRIVER"
 log "python series:  $PYTHON_VERSION"
-log "torch CUDA:     $TORCH_CUDA"
-log "pip extras:     $PIP_EXTRAS"
 
 # Patterns for "truly NVIDIA-driver" packages -- the ones that need a reboot
 # (kernel modules) plus the matched-version userland that depends on them.
@@ -181,7 +184,7 @@ if [[ "$SKIP_NVIDIA" != "1" ]]; then
     fi
 fi
 
-# ---------------- ensure ppas + tools (used by both blocks) ----------------
+# ---------------- ensure ppas + tools ----------------
 if [[ "$SKIP_DEBS" != "1" || -n "$NV_PKG" ]]; then
     log "ensuring deadsnakes PPA + apt-rdepends"
     run "sudo apt-get update -y -qq"
@@ -266,159 +269,24 @@ elif [[ "$SKIP_NVIDIA" == "1" ]]; then
     log "skipping nvidia debs (SKIP_NVIDIA=1)"
 fi
 
-# ---------------- pip wheels ----------------
-if [[ "$SKIP_PIP" != "1" ]]; then
-    PY="python${PYTHON_VERSION}"
-    command -v "$PY" >/dev/null || die "$PY not on PATH (needed to resolve wheels)"
-
-    TMPVENV="$OFFLINE_DIR/.tmp-resolve-venv"
-    log "creating temporary venv at $TMPVENV (used only to resolve dep versions)"
-    run "rm -rf '$TMPVENV'"
-    run "$PY -m venv '$TMPVENV'"
-    run "'$TMPVENV/bin/pip' install --upgrade -q pip wheel setuptools"
-
-    # `pip freeze` (step 3) omits pip/wheel/setuptools by design, so they would
-    # never make it into the bundle on their own. install.sh wants to upgrade
-    # them from local wheels before installing the rest, so seed them here.
-    log "downloading pip/wheel/setuptools into $WHEELS_DIR for offline bootstrap"
-    run "'$TMPVENV/bin/pip' download -q -d '$WHEELS_DIR' pip wheel setuptools"
-
-    # Step 1: install torch+torchaudio from CUDA-specific index so freeze records
-    # the right +cuXXX local version specifier.
-    log "installing torch ($TORCH_CUDA) into resolver venv"
-    run "'$TMPVENV/bin/pip' install -q --index-url https://download.pytorch.org/whl/$TORCH_CUDA torch torchaudio"
-
-    # Step 2: install project + extras. Must keep the CUDA wheel index reachable
-    # via --extra-index-url, otherwise pip re-resolves the [translate] extra's
-    # `torch>=2.2` against default PyPI and silently swaps the +cuXXX wheel from
-    # step 1 for the same-canonical-version +cpu wheel. That would then get
-    # baked into requirements.txt by `pip freeze` in step 3 and shipped to the
-    # air-gapped target as a broken (CPU-only) bundle.
-    log "installing project + extras into resolver venv"
-    run "'$TMPVENV/bin/pip' install -q --extra-index-url https://download.pytorch.org/whl/$TORCH_CUDA -e '$PROJECT_DIR'[$PIP_EXTRAS]"
-
-    # Step 3: produce a frozen requirements list (excluding the project itself).
-    REQ="$WHEELS_DIR/requirements.txt"
-    log "freezing resolved versions to $REQ"
-    if [[ "$DRY_RUN" != "1" ]]; then
-        "$TMPVENV/bin/pip" freeze \
-            | grep -v '^-e \|^video-ai-subtitle\|^pkg-resources==' \
-            > "$REQ"
-    fi
-
-    # Step 3.5: verify wheels already in WHEELS_DIR (from a previous run).
-    # `pip download -d DIR` skips files with matching name+version but does NOT
-    # validate their contents -- a previous Ctrl-C, network drop, or full-disk
-    # event can leave a truncated/empty wheel that pip will then happily skip.
-    # Validate zip/tar integrity now and remove anything broken so pip re-fetches.
-    if [[ "$DRY_RUN" != "1" ]]; then
-        verified=0; corrupt=0; tiny=0
-        while IFS= read -r -d '' f; do
-            verified=$((verified+1))
-            sz=$(stat -c%s "$f" 2>/dev/null || echo 0)
-            if [[ "$sz" -lt 200 ]]; then
-                warn "[wheels] tiny: $(basename "$f") ($sz B) -- removing"
-                rm -f "$f"; tiny=$((tiny+1))
-                continue
-            fi
-            ok=1
-            case "$f" in
-                *.whl)
-                    "$TMPVENV/bin/python" -c '
-import sys, zipfile
-try:
-    z = zipfile.ZipFile(sys.argv[1])
-    sys.exit(0 if z.testzip() is None else 1)
-except Exception:
-    sys.exit(1)
-' "$f" >/dev/null 2>&1 || ok=0
-                    ;;
-                *.tar.gz|*.tgz)
-                    tar -tzf "$f" >/dev/null 2>&1 || ok=0
-                    ;;
-            esac
-            if [[ "$ok" == "0" ]]; then
-                warn "[wheels] corrupt: $(basename "$f") -- removing"
-                rm -f "$f"; corrupt=$((corrupt+1))
-            fi
-        done < <(find "$WHEELS_DIR" -maxdepth 1 -type f \( -name '*.whl' -o -name '*.tar.gz' -o -name '*.tgz' \) -print0)
-        log "[wheels] verified $verified existing files: removed $corrupt corrupt + $tiny tiny"
-    fi
-
-    # Step 4: download every wheel matching those exact versions.
-    # pip download skips files already on disk that match the resolved
-    # name+version, so the verification pass above is what guarantees freshness.
-    log "downloading wheels into $WHEELS_DIR"
-    run "'$TMPVENV/bin/pip' download \
-        --index-url https://download.pytorch.org/whl/$TORCH_CUDA \
-        --extra-index-url https://pypi.org/simple \
-        -d '$WHEELS_DIR' \
-        -r '$REQ'"
-
-    log "cleaning up resolver venv"
-    run "rm -rf '$TMPVENV'"
-
-    WHL_COUNT=$(find "$WHEELS_DIR" -maxdepth 1 -name '*.whl' 2>/dev/null | wc -l)
-    SDIST_COUNT=$(find "$WHEELS_DIR" -maxdepth 1 -name '*.tar.gz' 2>/dev/null | wc -l)
-    log "[wheels] gathered $WHL_COUNT wheels + $SDIST_COUNT sdists ($(du -sh "$WHEELS_DIR" 2>/dev/null | cut -f1))"
-else
-    log "skipping pip (SKIP_PIP=1)"
-fi
-
-# ---------------- manifest ----------------
+# ---------------- manifest (apt artifacts) ----------------
 log "writing manifest -> $MANIFEST"
 {
-    echo "# video_ai_subtitle offline-packages bundle"
+    echo "# video_ai_subtitle offline-packages bundle (apt half)"
     echo "# generated: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
     echo "# host:      $(uname -a)"
     echo "# os:        ${PRETTY_NAME:-?}"
     echo "# nvidia driver detected: ${NV_MAJOR:-(none)}"
     echo "# python:        $PYTHON_VERSION"
-    echo "# torch_cuda:    $TORCH_CUDA"
-    echo "# pip_extras:    $PIP_EXTRAS"
     echo
     echo "## nvidia-debs/  (NVIDIA driver, install before debs/)"
     (cd "$NVIDIA_DEBS_DIR" && ls -1 *.deb 2>/dev/null) || echo "(none)"
     echo
     echo "## debs/"
     (cd "$DEBS_DIR" && ls -1 *.deb 2>/dev/null) || echo "(none)"
-    echo
-    echo "## pip-wheels/"
-    (cd "$WHEELS_DIR" && ls -1 2>/dev/null) || echo "(none)"
 } > "$MANIFEST"
 
-# ---------------- integrity checksums ----------------
-SUMS_FILE="$OFFLINE_DIR/sha256sums.txt"
-log "writing checksums -> $SUMS_FILE"
-if [[ "$DRY_RUN" != "1" ]]; then
-    (
-        cd "$OFFLINE_DIR"
-        # Hash every artifact file (debs, wheels, requirements.txt, manifest).
-        # `find -print0 | sort -z` keeps ordering deterministic across runs and
-        # safe against filenames with spaces / special chars.
-        find debs nvidia-debs pip-wheels manifest.txt \
-            -type f \
-            \( -name '*.deb' -o -name '*.whl' -o -name '*.tar.gz' \
-               -o -name 'requirements.txt' -o -name 'manifest.txt' \) \
-            -print0 2>/dev/null \
-            | sort -z \
-            | xargs -0 sha256sum > "$SUMS_FILE"
-    )
-    log "checksums: $(wc -l < "$SUMS_FILE") files, $(du -h "$SUMS_FILE" | cut -f1)"
-fi
-
-log "DONE."
+log "DONE (apt half)."
 log "next:"
-log "  bash offline_packages/build_models.sh                    # download model weights"
-log ""
-log "  # bundle into 1 GiB parts (sudo apt install pv pigz -- pigz is multi-threaded gzip,"
-log "  # 5-10x faster than the single-threaded default; output stays gzip-compatible):"
-log "  mkdir -p ../offline_packages_parts && \\"
-log "    tar cf - offline_packages/ \\"
-log "      | pv -s \$(du -sb offline_packages | cut -f1) \\"
-log "      | pigz \\"
-log "      | split -b 1G -d -a 3 - ../offline_packages_parts/bundle.tgz."
-log ""
-log "  # on the offline machine, after copying offline_packages_parts/ over"
-log "  # (add 'v' to xzf for filename-by-filename progress: tar xzvf -):"
-log "  cat offline_packages_parts/bundle.tgz.* | tar xzf -"
+log "  bash offline_packages/download_2_python_packages.sh    # gather pip wheels"
+log "  bash offline_packages/download_3_models.sh             # download model weights"

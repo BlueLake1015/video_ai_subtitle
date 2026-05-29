@@ -36,9 +36,8 @@ def _decode_full_audio(input_: str) -> np.ndarray:
 
 
 def _transcribe_segments(
-    cfg: AppConfig, segments: list[Segment]
+    transcriber, cfg: AppConfig, segments: list[Segment]
 ) -> list[Word]:
-    transcriber = build_transcriber(cfg.transcribe)
     all_words: list[Word] = []
     for i, seg in enumerate(segments):
         opts = TranscribeOptions(
@@ -141,15 +140,32 @@ def run_batch(
     audio = _decode_full_audio(input_)
     log.info("decoded %.2fs of audio", len(audio) / SAMPLE_RATE)
 
-    vad = SileroBatchVAD(cfg.vad)
-    regions = vad.segment(audio, SAMPLE_RATE)
-    log.info("VAD: %d speech regions", len(regions))
+    transcriber = build_transcriber(cfg.transcribe)
 
-    segmenter = WhisperSegmenter(cfg.segment, cfg.vad)
-    segments = segmenter.from_regions(audio, regions)
-    log.info("Built %d Whisper segments (~%.0fs each)", len(segments), cfg.segment.target_seconds)
+    if getattr(transcriber, "consumes_full_audio", False):
+        # Backend runs its own VAD / segmentation / alignment on the whole file
+        # (e.g. WhisperX). Skip this project's VAD + segmenter for it.
+        log.info(
+            "backend %r consumes full audio; skipping VAD + segmenter",
+            cfg.transcribe.backend,
+        )
+        opts = TranscribeOptions(
+            language=cfg.transcribe.language,
+            initial_prompt=cfg.transcribe.initial_prompt,
+            time_offset_s=0.0,
+        )
+        words = transcriber.transcribe(audio, opts)
+        log.info("transcribed full audio -> %d words", len(words))
+    else:
+        vad = SileroBatchVAD(cfg.vad)
+        regions = vad.segment(audio, SAMPLE_RATE)
+        log.info("VAD: %d speech regions", len(regions))
 
-    words = _transcribe_segments(cfg, segments)
+        segmenter = WhisperSegmenter(cfg.segment, cfg.vad)
+        segments = segmenter.from_regions(audio, regions)
+        log.info("Built %d Whisper segments (~%.0fs each)", len(segments), cfg.segment.target_seconds)
+
+        words = _transcribe_segments(transcriber, cfg, segments)
 
     cues = CueAssembler(cfg.cues).assemble(words)
     log.info("assembled %d cues", len(cues))

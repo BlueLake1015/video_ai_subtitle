@@ -13,16 +13,32 @@
 #   * Whisper presets: ~10 GB total (tiny..large-v3-turbo)
 #   * Gemma 1B+4B+12B+27B: ~90 GB total in original precision
 #
+# By default fetches the faster-whisper + Gemma models (the default ASR + translate
+# backends). The alternative ASR engines are opt-in via the env vars below.
+#
 # Usage:
-#   bash offline_packages/build_models.sh                       # everything we ship presets for
-#   WHISPER_MODELS="medium large-v3-turbo" bash offline_packages/build_models.sh
-#   GEMMA_MODELS="google/translategemma-4b-it" bash offline_packages/build_models.sh
-#   GEMMA_MODELS=""  bash offline_packages/build_models.sh      # whisper only
+#   bash offline_packages/download_3_models.sh                       # faster-whisper + Gemma
+#   WHISPER_MODELS="medium large-v3-turbo" bash offline_packages/download_3_models.sh
+#   GEMMA_MODELS="google/translategemma-4b-it" bash offline_packages/download_3_models.sh
+#   GEMMA_MODELS=""  bash offline_packages/download_3_models.sh      # whisper only
+#
+#   # Alternative ASR engines (opt-in; see the variable blocks below):
+#   ASR_ENGINE_MODELS="Qwen/Qwen3-ASR-1.7B Qwen/Qwen3-ForcedAligner-0.6B \
+#     nvidia/parakeet-tdt-0.6b-v3 nvidia/canary-qwen-2.5b \
+#     ibm-granite/granite-speech-4.1-2b" bash offline_packages/download_3_models.sh
+#   OPENAI_WHISPER_MODELS="large-v3"   bash offline_packages/download_3_models.sh
+#   WHISPERX_ALIGN_LANGS="en zh ja ko" bash offline_packages/download_3_models.sh
 
 set -euo pipefail
 
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 OFFLINE_DIR="${OFFLINE_DIR:-$PROJECT_DIR/offline_packages}"
+
+# Shared build profile (target GPU / CUDA / torch / python). Values there are
+# assign-if-unset, so explicit `VAR=... bash <script>` overrides still win.
+TARGET_ENV="${TARGET_ENV:-$PROJECT_DIR/offline_packages/target.env}"
+[[ -f "$TARGET_ENV" ]] && source "$TARGET_ENV"
+
 HF_CACHE="$OFFLINE_DIR/hf-cache"
 
 # Whisper variants matching configs/transcribe/*.yaml. faster-whisper consumes
@@ -41,6 +57,31 @@ WHISPER_TURBO_REPO="${WHISPER_TURBO_REPO:-deepdml/faster-whisper-large-v3-turbo-
 # The two 27B models are ~50 GB each and gated. Override GEMMA_MODELS to skip
 # them, or set FORCE_REDOWNLOAD=1 to re-fetch a partial snapshot.
 GEMMA_MODELS="${GEMMA_MODELS:-google/gemma-3-1b-it google/translategemma-4b-it google/translategemma-12b-it google/translategemma-27b-it google/gemma-4-27b-it}"
+
+# ---- Alternative ASR engine models (all opt-in: default empty) ----
+# These are the non-default ASR backends (see README §5). They're large and some
+# are gated, so nothing here is fetched unless you set the variable.
+#
+# 1) HF-hosted engines -> land in hf-cache/ alongside Whisper/Gemma. Recommended
+#    full set to enable (qwen3_asr + its aligner, parakeet, canary_qwen, granite):
+#      ASR_ENGINE_MODELS="Qwen/Qwen3-ASR-1.7B Qwen/Qwen3-ForcedAligner-0.6B \
+#        nvidia/parakeet-tdt-0.6b-v3 nvidia/canary-qwen-2.5b \
+#        ibm-granite/granite-speech-4.1-2b"
+ASR_ENGINE_MODELS="${ASR_ENGINE_MODELS:-}"
+
+# 2) openai-whisper downloads .pt weights from OpenAI's CDN (NOT HuggingFace),
+#    into whisper-cache/ here. Space-separated model names, e.g. "large-v3".
+#    Requires the [openai-whisper] extra installed in $VENV.
+OPENAI_WHISPER_MODELS="${OPENAI_WHISPER_MODELS:-}"
+WHISPER_CACHE="$OFFLINE_DIR/whisper-cache"
+
+# 3) whisperx alignment models + Silero VAD come from torch.hub (en wav2vec2
+#    bundle + VAD) and HuggingFace (non-en wav2vec2). Space-separated language
+#    codes to pre-warm, e.g. "en zh ja ko". torch.hub artifacts land in
+#    torch-hub-cache/ here; HF align models land in hf-cache/. Requires the
+#    [whisperx] extra installed in $VENV.
+WHISPERX_ALIGN_LANGS="${WHISPERX_ALIGN_LANGS:-}"
+TORCH_HUB_CACHE="$OFFLINE_DIR/torch-hub-cache"
 
 VENV="${VENV:-$PROJECT_DIR/.venv}"
 # huggingface_hub >= 1.0 ships the `hf` CLI; older versions used the now-deprecated
@@ -184,8 +225,71 @@ if [[ -n "${GEMMA_MODELS// }" ]]; then
     done
 fi
 
+# ---------------- alternative ASR engine models (HF) ----------------
+if [[ -n "${ASR_ENGINE_MODELS// }" ]]; then
+    log "downloading alternative ASR engine models (HF): $ASR_ENGINE_MODELS"
+    log "  (parakeet/canary/granite are large; some repos may be gated)"
+    for m in $ASR_ENGINE_MODELS; do
+        hf_fetch "$m" || warn "$m failed (continuing)"
+    done
+fi
+
+# ---------------- openai-whisper weights (.pt from OpenAI CDN) ----------------
+if [[ -n "${OPENAI_WHISPER_MODELS// }" ]]; then
+    if "$VENV/bin/python" -c "import whisper" 2>/dev/null; then
+        mkdir -p "$WHISPER_CACHE"
+        log "downloading openai-whisper weights -> $WHISPER_CACHE: $OPENAI_WHISPER_MODELS"
+        for m in $OPENAI_WHISPER_MODELS; do
+            log "  -> openai-whisper $m"
+            # whisper._download fetches the .pt without loading it into memory.
+            "$VENV/bin/python" - "$m" "$WHISPER_CACHE" <<'PY' || warn "openai-whisper $m failed (continuing)"
+import sys, whisper
+name, root = sys.argv[1], sys.argv[2]
+url = whisper._MODELS.get(name)
+if not url:
+    sys.exit(f"unknown openai-whisper model: {name} (have: {', '.join(whisper._MODELS)})")
+whisper._download(url, root, in_memory=False)
+PY
+        done
+    else
+        warn "openai-whisper not installed in $VENV; skipping OPENAI_WHISPER_MODELS"
+        warn "  enable with: $VENV/bin/pip install -e '.[openai-whisper]'"
+    fi
+fi
+
+# ---------------- whisperx align models + Silero VAD (torch.hub) ----------------
+if [[ -n "${WHISPERX_ALIGN_LANGS// }" ]]; then
+    if "$VENV/bin/python" -c "import whisperx" 2>/dev/null; then
+        mkdir -p "$TORCH_HUB_CACHE"
+        log "pre-warming whisperx align + Silero VAD -> $TORCH_HUB_CACHE (langs: $WHISPERX_ALIGN_LANGS)"
+        # TORCH_HOME steers torch.hub downloads into the bundle; HF_HUB_CACHE keeps
+        # non-en wav2vec2 align models in hf-cache/. Loads on CPU/int8 to avoid GPU.
+        TORCH_HOME="$TORCH_HUB_CACHE" HF_HUB_CACHE="$HF_HUB_CACHE" \
+            "$VENV/bin/python" - "$WHISPERX_ALIGN_LANGS" <<'PY' || warn "whisperx pre-warm failed (continuing)"
+import sys, whisperx
+langs = sys.argv[1].split()
+# Loading the model pulls the Silero VAD into torch.hub.
+try:
+    whisperx.load_model("Systran/faster-whisper-large-v3", "cpu", compute_type="int8", vad_method="silero")
+except TypeError:
+    whisperx.load_model("Systran/faster-whisper-large-v3", "cpu", compute_type="int8")
+for lang in langs:
+    try:
+        whisperx.load_align_model(language_code=lang, device="cpu")
+        print(f"  align model cached: {lang}")
+    except Exception as e:
+        print(f"  align {lang} failed: {e}", file=sys.stderr)
+PY
+    else
+        warn "whisperx not installed in $VENV; skipping WHISPERX_ALIGN_LANGS"
+        warn "  enable with: $VENV/bin/pip install -e '.[whisperx]'  (see README Volta note)"
+    fi
+fi
+
 # ---------------- summary ----------------
 log "DONE. Cache size: $(du -sh "$HF_CACHE" 2>/dev/null | cut -f1)"
+[[ -d "$WHISPER_CACHE" ]]   && log "openai-whisper cache: $(du -sh "$WHISPER_CACHE" 2>/dev/null | cut -f1)"
+[[ -d "$TORCH_HUB_CACHE" ]] && log "torch.hub cache:      $(du -sh "$TORCH_HUB_CACHE" 2>/dev/null | cut -f1)"
 log "snapshots present:"
 for d in "$HF_CACHE"/hub/models--*; do
     [[ -d "$d" ]] || continue
@@ -206,4 +310,7 @@ log ""
 log "  # on the offline machine, after copying offline_packages_parts/ over"
 log "  # (add 'v' to xzf for filename-by-filename progress: tar xzvf -):"
 log "  cat offline_packages_parts/bundle.tgz.* | tar xzf -"
-log "  bash offline_packages/install.sh"
+log "  # then run the install steps IN ORDER:"
+log "  bash offline_packages/install_1_ubuntu_packages.sh"
+log "  bash offline_packages/install_2_python_packages.sh"
+log "  bash offline_packages/install_3_models.sh"
