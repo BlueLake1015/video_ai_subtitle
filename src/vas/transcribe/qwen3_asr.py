@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import tempfile
+import time
 import wave
 
 import numpy as np
@@ -49,6 +50,11 @@ class Qwen3AsrTranscriber:
         self._model = None
         self._aligner = getattr(cfg, "forced_aligner", None) or None
         self._use_ts = bool(self._aligner)
+        # --- timing instrumentation (inference-only, excludes model load) ---
+        self._load_s = 0.0      # time spent loading/initializing weights
+        self._infer_s = 0.0     # cumulative pure model.transcribe() wall time
+        self._audio_s = 0.0     # cumulative audio seconds fed to the model
+        self._n_calls = 0
 
     def _ensure_model(self):
         if self._model is None:
@@ -73,7 +79,12 @@ class Qwen3AsrTranscriber:
                 "loading Qwen3-ASR model=%s device=%s dtype=%s aligner=%s",
                 self.cfg.model, device_map, dtype, self._aligner or "none",
             )
+            t0 = time.perf_counter()
             self._model = Qwen3ASRModel.from_pretrained(self.cfg.model, **kwargs)
+            if device_map != "cpu":
+                torch.cuda.synchronize()
+            self._load_s = time.perf_counter() - t0
+            log.info("Qwen3-ASR model loaded in %.2fs (weights + init)", self._load_s)
         return self._model
 
     def _qwen_language(self, opts: TranscribeOptions) -> str | None:
@@ -95,11 +106,30 @@ class Qwen3AsrTranscriber:
         # segment to a temp 16 kHz mono WAV.
         with tempfile.NamedTemporaryFile(suffix=".wav") as tf:
             _write_wav16(tf.name, samples)
+            # Time ONLY the model inference (CUDA-synchronized), excluding the
+            # temp-WAV write and any model loading.
+            import torch
+            cuda = torch.cuda.is_available()
+            if cuda:
+                torch.cuda.synchronize()
+            t0 = time.perf_counter()
             result = model.transcribe(
                 audio=tf.name,
                 language=self._qwen_language(opts),
                 return_time_stamps=self._use_ts,
             )
+            if cuda:
+                torch.cuda.synchronize()
+            dt = time.perf_counter() - t0
+        self._infer_s += dt
+        self._audio_s += duration
+        self._n_calls += 1
+        log.info(
+            "ASR-INFER call=%d this=%.3fs (%.1fs audio) | cumulative infer=%.3fs "
+            "audio=%.1fs RTFx=%.2f (load=%.2fs excluded)",
+            self._n_calls, dt, duration, self._infer_s, self._audio_s,
+            (self._audio_s / self._infer_s) if self._infer_s else 0.0, self._load_s,
+        )
 
         r = result[0] if isinstance(result, (list, tuple)) else result
         text = (getattr(r, "text", None) or "").strip()

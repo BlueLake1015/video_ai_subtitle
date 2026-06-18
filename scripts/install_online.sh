@@ -171,6 +171,14 @@ fi
 need_sudo
 setup_user_run
 
+# Refresh the apt index up front. A stale index points at package versions the
+# mirror has already superseded, so the .deb URLs 404 ("Failed to fetch ... 404
+# Not Found"). The driver block below also updates, but it's skipped when the
+# driver is already current -- leaving the ffmpeg/python installs to fail on a
+# stale index. Update once here so every apt path downstream is safe.
+log "updating apt index"
+run "$SUDO apt-get update -y"
+
 # ---------------- driver install ----------------
 SHOULD_INSTALL=1
 if [[ -n "$EXISTING_DRIVER" ]]; then
@@ -184,9 +192,6 @@ if [[ -n "$EXISTING_DRIVER" ]]; then
 fi
 
 if [[ "$SHOULD_INSTALL" == "1" ]]; then
-    log "updating apt index"
-    run "$SUDO apt-get update -y"
-
     log "installing prerequisites"
     run "$SUDO apt-get install -y --no-install-recommends ca-certificates curl gnupg pciutils"
 
